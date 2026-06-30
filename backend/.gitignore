@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+# Environment / secrets — NEVER commit these
+.env
+.env.*
+*.local
+!.env.example
+# Logs / OS
+*.log
+.DS_Store
+Thumbs.db
+# QR code artifacts
+qrcodes/

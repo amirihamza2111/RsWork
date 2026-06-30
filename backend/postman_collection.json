@@ -1,0 +1,167 @@
+{
+    "info": {
+      "name": "Restaurant Management API",
+      "description": "API collection for testing restaurant management system",
+      "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "item": [
+      {
+        "name": "Auth",
+        "item": [
+          {
+            "name": "Register",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"name\": \"John Doe\",\n  \"email\": \"john@example.com\",\n  \"password\": \"ChangeMeStrong!123\",\n  \"role\": \"manager\"\n}"
+              },
+              "url": {
+                "raw": "{{base_url}}/api/auth/register",
+                "host": ["{{base_url}}"],
+                "path": ["api", "auth", "register"]
+              }
+            }
+          },
+          {
+            "name": "Login",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"email\": \"john@example.com\",\n  \"password\": \"ChangeMeStrong!123\"\n}"
+              },
+              "url": {
+                "raw": "{{base_url}}/api/auth/login",
+                "host": ["{{base_url}}"],
+                "path": ["api", "auth", "login"]
+              }
+            }
+          },
+          {
+            "name": "Get Current User",
+            "request": {
+              "method": "GET",
+              "header": [
+                {
+                  "key": "Authorization",
+                  "value": "Bearer {{token}}"
+                }
+              ],
+              "url": {
+                "raw": "{{base_url}}/api/auth/me",
+                "host": ["{{base_url}}"],
+                "path": ["api", "auth", "me"]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Menu",
+        "item": [
+          {
+            "name": "Get Menu Items",
+            "request": {
+              "method": "GET",
+              "header": [],
+              "url": {
+                "raw": "{{base_url}}/api/menu/items?restaurantId={{restaurantId}}&isAvailable=true",
+                "host": ["{{base_url}}"],
+                "path": ["api", "menu", "items"],
+                "query": [
+                  {
+                    "key": "restaurantId",
+                    "value": "{{restaurantId}}"
+                  },
+                  {
+                    "key": "isAvailable",
+                    "value": "true"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "Orders",
+        "item": [
+          {
+            "name": "Create Order",
+            "request": {
+              "method": "POST",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "Authorization",
+                  "value": "Bearer {{token}}"
+                }
+              ],
+              "body": {
+                "mode": "raw",
+                "raw": "{\n  \"restaurant\": \"{{restaurantId}}\",\n  \"table\": \"{{tableId}}\",\n  \"client\": \"{{clientId}}\",\n  \"waiter\": \"{{waiterId}}\",\n  \"items\": [\n    {\n      \"menuItem\": \"{{menuItemId}}\",\n      \"quantity\": 2,\n      \"price\": 15.99,\n      \"options\": \"no onions\",\n      \"comment\": \"extra sauce\"\n    }\n  ],\n  \"notes\": \"Please prepare quickly\",\n  \"paymentMethod\": \"card\"\n}"
+              },
+              "url": {
+                "raw": "{{base_url}}/api/orders",
+                "host": ["{{base_url}}"],
+                "path": ["api", "orders"]
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "variable": [
+      {
+        "key": "base_url",
+        "value": "https://your-backend-domain.example.com",
+        "type": "string"
+      },
+      {
+        "key": "token",
+        "value": "",
+        "type": "string"
+      },
+      {
+        "key": "restaurantId",
+        "value": "",
+        "type": "string"
+      },
+      {
+        "key": "tableId",
+        "value": "",
+        "type": "string"
+      },
+      {
+        "key": "clientId",
+        "value": "",
+        "type": "string"
+      },
+      {
+        "key": "waiterId",
+        "value": "",
+        "type": "string"
+      },
+      {
+        "key": "menuItemId",
+        "value": "",
+        "type": "string"
+      }
+    ]
+  }
