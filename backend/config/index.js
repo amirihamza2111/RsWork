@@ -52,6 +52,14 @@ const config = {
     url: process.env.ML_SERVICE_URL || 'http://localhost:8000',
     timeoutMs: Number(process.env.ML_TIMEOUT_MS) || 4000,
   },
+  // Transactional email (verification, password reset). Optional — sends are
+  // skipped (logged) when no key is configured, so flows never break.
+  email: {
+    provider: (process.env.EMAIL_PROVIDER || 'resend').toLowerCase(),
+    resendApiKey: process.env.RESEND_API_KEY || '',
+    from: process.env.EMAIL_FROM || 'RsWork <onboarding@resend.dev>',
+    timeoutMs: Number(process.env.EMAIL_TIMEOUT_MS) || 15000,
+  },
   // LLM for the AI-written report. Optional — the report falls back to a
   // deterministic template narrative when no key is configured.
   // Provider: 'gemini' or 'groq'. AI_MODEL overrides the per-provider default.

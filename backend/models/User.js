@@ -36,6 +36,18 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    isVerified: {
+      type: Boolean,
+      default: false,
+    },
+    emailVerificationToken: {
+      type: String,
+      select: false,
+    },
+    emailVerificationExpires: {
+      type: Date,
+      select: false,
+    },
     resetPasswordToken: {
       type: String,
       select: false,
@@ -73,9 +85,17 @@ userSchema.methods.createPasswordResetToken = function () {
   return rawToken;
 };
 
-// Hash a raw reset token the same way, for lookup.
+// Hash a raw token the same way, for lookup (reset + email verification).
 userSchema.statics.hashResetToken = function (rawToken) {
   return crypto.createHash('sha256').update(String(rawToken)).digest('hex');
+};
+
+// Email verification token: stores its SHA-256 hash (+24h expiry), returns raw.
+userSchema.methods.createEmailVerificationToken = function () {
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  this.emailVerificationToken = crypto.createHash('sha256').update(rawToken).digest('hex');
+  this.emailVerificationExpires = Date.now() + 24 * 60 * 60 * 1000;
+  return rawToken;
 };
 
 userSchema.index({ restaurant: 1, role: 1 });

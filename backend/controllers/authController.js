@@ -5,6 +5,19 @@ const config = require('../config');
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const { ok, created } = require('../utils/apiResponse');
+const { sendEmailSafe } = require('../services/emailService');
+const { verificationEmail, passwordResetEmail } = require('../services/emailTemplates');
+
+const verifyUrl = (rawToken) => `${config.clientUrl}/verify-email?token=${rawToken}`;
+const resetUrl = (rawToken) => `${config.clientUrl}/reset-password?token=${rawToken}`;
+
+// Issues an email-verification token, saves it, and emails the link.
+const issueEmailVerification = async (user) => {
+  const rawToken = user.createEmailVerificationToken();
+  await user.save();
+  await sendEmailSafe({ to: user.email, ...verificationEmail(user.name, verifyUrl(rawToken)) });
+  return rawToken;
+};
 
 const generateToken = (id) =>
   jwt.sign({ id }, config.jwt.secret, { expiresIn: config.jwt.expiresIn });
@@ -39,7 +52,11 @@ exports.register = asyncHandler(async (req, res) => {
     role: 'client',
   });
 
-  return created(res, { token: generateToken(user._id), user: publicUser(user) }, 'Registered');
+  const rawVerifyToken = await issueEmailVerification(user);
+  const payload = { token: generateToken(user._id), user: publicUser(user) };
+  if (!config.isProd) payload.verifyToken = rawVerifyToken; // testable without email
+
+  return created(res, payload, 'Registered — check your email to verify your account');
 });
 
 // @desc   Log in
@@ -118,11 +135,11 @@ exports.registerRestaurant = asyncHandler(async (req, res) => {
   restaurant.owner = user._id;
   await restaurant.save();
 
-  return created(
-    res,
-    { token: generateToken(user._id), user: publicUser(user), restaurant },
-    'Restaurant registered'
-  );
+  const rawVerifyToken = await issueEmailVerification(user);
+  const payload = { token: generateToken(user._id), user: publicUser(user), restaurant };
+  if (!config.isProd) payload.verifyToken = rawVerifyToken;
+
+  return created(res, payload, 'Restaurant registered — check your email to verify');
 });
 
 // @desc   Change the authenticated user's password
@@ -163,9 +180,47 @@ exports.forgotPassword = asyncHandler(async (req, res) => {
   const rawToken = user.createPasswordResetToken();
   await user.save();
 
-  // TODO: deliver the token by email once the email feature is enabled.
-  // Until then, expose it in non-production so the flow is testable.
+  await sendEmailSafe({ to: user.email, ...passwordResetEmail(user.name, resetUrl(rawToken)) });
+
+  // Also expose the token in non-production so the flow is testable without email.
   const data = config.isProd ? null : { resetToken: rawToken };
+  return ok(res, data, message);
+});
+
+// @desc   Verify a user's email using a token
+// @route  GET/POST /api/auth/verify-email
+// @access Public
+exports.verifyEmail = asyncHandler(async (req, res) => {
+  const token = req.query.token || req.body.token;
+  if (!token) throw ApiError.badRequest('Verification token is required');
+
+  const user = await User.findOne({
+    emailVerificationToken: User.hashResetToken(token),
+    emailVerificationExpires: { $gt: Date.now() },
+  });
+  if (!user) throw ApiError.badRequest('Invalid or expired verification token');
+
+  user.isVerified = true;
+  user.emailVerificationToken = undefined;
+  user.emailVerificationExpires = undefined;
+  await user.save();
+
+  return ok(res, { verified: true }, 'Email verified');
+});
+
+// @desc   Resend the verification email
+// @route  POST /api/auth/resend-verification
+// @access Public
+exports.resendVerification = asyncHandler(async (req, res) => {
+  const { email } = req.body;
+  if (!email) throw ApiError.badRequest('Please provide email');
+
+  const user = await User.findOne({ email: String(email).trim().toLowerCase() });
+  const message = 'If that account exists and is unverified, a new link has been sent';
+  if (!user || user.isVerified) return ok(res, null, message);
+
+  const rawToken = await issueEmailVerification(user);
+  const data = config.isProd ? null : { verifyToken: rawToken };
   return ok(res, data, message);
 });
 

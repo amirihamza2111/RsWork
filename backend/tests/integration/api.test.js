@@ -1,4 +1,5 @@
 process.env.DISABLE_RATE_LIMIT = 'true'; // deterministic auth-heavy suite
+process.env.RESEND_API_KEY = ''; // don't send real emails during tests
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -349,4 +350,37 @@ test('security (JWT): a token issued before a password change is rejected', asyn
 
   const after = await api('/api/auth/me', { token });
   assert.equal(after.status, 401);
+});
+
+/* ------------------------ Email verification ------------------------ */
+
+test('email: register creates an unverified account and issues a verify token', async () => {
+  const res = await api('/api/auth/register', {
+    method: 'POST',
+    body: { name: 'Verif', email: 'verify-me@test.com', password: 'password123' },
+  });
+  assert.equal(res.status, 201);
+  const d = (await res.json()).data;
+  assert.equal(d.user.isVerified, false);
+  assert.ok(d.verifyToken, 'verify token exposed in non-production');
+  state.verifyToken = d.verifyToken;
+  state.verifyEmail = 'verify-me@test.com';
+});
+
+test('email: verify-email marks the account verified', async () => {
+  const res = await api('/api/auth/verify-email', { method: 'POST', body: { token: state.verifyToken } });
+  assert.equal(res.status, 200);
+
+  const login = await api('/api/auth/login', { method: 'POST', body: { email: state.verifyEmail, password: 'password123' } });
+  assert.equal((await login.json()).data.user.isVerified, true);
+});
+
+test('email: an invalid verification token is rejected', async () => {
+  const res = await api('/api/auth/verify-email', { method: 'POST', body: { token: 'bad-token' } });
+  assert.equal(res.status, 400);
+});
+
+test('email: resend-verification responds without leaking account existence', async () => {
+  const res = await api('/api/auth/resend-verification', { method: 'POST', body: { email: 'verify-me@test.com' } });
+  assert.equal(res.status, 200);
 });
