@@ -5,9 +5,13 @@ const morgan = require('morgan');
 const config = require('./config');
 const { apiLimiter } = require('./middlewares/rateLimiters');
 const errorHandler = require('./middlewares/errorHandler');
+const { sanitizeRequest } = require('./middlewares/sanitize');
 
 const app = express();
 app.set('trust proxy', 1);
+// The 'simple' query parser does not build nested objects from bracket
+// notation, which neutralises `?key[$ne]=...` NoSQL operator injection.
+app.set('query parser', 'simple');
 app.use(helmet());
 
 const isAllowedOrigin = (origin) => {
@@ -35,9 +39,18 @@ if (!config.isProd) {
   app.use(morgan('dev'));
 }
 
+// Stripe webhook needs the raw body for signature verification, and is mounted
+// before the JSON parser AND the rate limiter (so event bursts aren't dropped).
+app.post(
+  '/api/payments/webhook',
+  express.raw({ type: 'application/json' }),
+  require('./controllers/paymentController').handleStripeWebhook
+);
+
 app.use(apiLimiter);
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '100kb' }));
+app.use(express.urlencoded({ extended: true, limit: '100kb' }));
+app.use(sanitizeRequest);
 
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/auth', require('./routes/auth'));

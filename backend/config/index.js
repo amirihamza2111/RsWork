@@ -39,6 +39,7 @@ const config = {
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY || '',
     currency: (process.env.STRIPE_CURRENCY || 'usd').toLowerCase(),
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
   },
   cloudinary: {
     cloudName: process.env.CLOUDINARY_CLOUD_NAME,

@@ -35,7 +35,7 @@ const initSocket = (server) => {
         return next();
       }
 
-      const decoded = jwt.verify(token, config.jwt.secret);
+      const decoded = jwt.verify(token, config.jwt.secret, { algorithms: ['HS256'] });
       const user = await User.findById(decoded.id);
 
       socket.user = user || null;

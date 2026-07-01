@@ -11,6 +11,13 @@ exports.loginValidator = [
   body('password').notEmpty().withMessage('Password is required'),
 ];
 
+exports.registerRestaurantValidator = [
+  body('restaurantName').trim().notEmpty().withMessage('Restaurant name is required'),
+  body('name').trim().notEmpty().withMessage('Manager name is required'),
+  body('email').trim().isEmail().withMessage('Please provide a valid email'),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+];
+
 // Restaurant is derived from the table server-side, so it is not required here.
 exports.createOrderValidator = [
   body('table')

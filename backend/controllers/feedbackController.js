@@ -5,6 +5,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const { ok, created } = require('../utils/apiResponse');
 const { getRestaurantScope } = require('../utils/scope');
+const { sanitizeText } = require('../utils/sanitizeText');
 
 // @desc   List feedbacks (scoped to the manager's restaurant)
 // @route  GET /api/feedbacks
@@ -45,8 +46,8 @@ exports.createFeedback = asyncHandler(async (req, res) => {
     table: tableId || undefined,
     order: orderId || undefined,
     rating,
-    category,
-    comment,
+    category: sanitizeText(category, 50),
+    comment: sanitizeText(comment, 500),
   });
 
   return created(res, { feedback }, 'Thanks for your feedback');

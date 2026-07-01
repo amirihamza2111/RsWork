@@ -7,6 +7,8 @@ const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const { ok, created } = require('../utils/apiResponse');
 const { toId, isSameRestaurant } = require('../utils/scope');
+const { sanitizeText } = require('../utils/sanitizeText');
+const { redactOrderForPublic } = require('../utils/orderView');
 const {
   ORDER_STATUSES,
   ITEM_STATUSES,
@@ -14,6 +16,18 @@ const {
   canTransitionItem,
   deriveOrderStatus,
 } = require('../utils/orderWorkflow');
+
+// Who may see customer/staff identity on an order (everyone else gets a
+// redacted view — important because order tracking is public).
+const canViewOrderPII = (user, order) => {
+  if (!user || !order) return false;
+  if (user.role === 'superadmin') return true;
+  if (['manager', 'cashier', 'cook', 'waiter'].includes(user.role)) {
+    return isSameRestaurant(user, order.restaurant);
+  }
+  if (user.role === 'client') return toId(order.client) === toId(user._id);
+  return false;
+};
 
 const ACTIVE_STATUSES = ['pending', 'confirmed', 'preparing', 'ready'];
 
@@ -98,8 +112,8 @@ exports.createOrder = asyncHandler(async (req, res) => {
       menuItem: menuItem._id,
       quantity,
       price: menuItem.price, // server-side price
-      options: item.options,
-      comment: item.comment,
+      options: sanitizeText(item.options, 200),
+      comment: sanitizeText(item.comment, 300),
       prepStation: menuItem.prepStation === 'bar' ? 'bar' : 'kitchen',
     };
   });
@@ -116,7 +130,7 @@ exports.createOrder = asyncHandler(async (req, res) => {
     client: orderClient,
     waiter: orderWaiter,
     items: orderItems,
-    notes,
+    notes: sanitizeText(notes, 1000),
     paymentMethod,
     totalAmount,
   });
@@ -192,7 +206,9 @@ exports.getOrderById = asyncHandler(async (req, res) => {
   if (!canReadOrder(req.user, order)) {
     throw ApiError.forbidden();
   }
-  return ok(res, { order });
+  // Public/anonymous trackers get a PII-redacted view.
+  const view = canViewOrderPII(req.user, order) ? order : redactOrderForPublic(order);
+  return ok(res, { order: view });
 });
 
 // @desc   Update order status

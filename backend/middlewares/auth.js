@@ -14,8 +14,8 @@ exports.protect = asyncHandler(async (req, res, next) => {
     throw ApiError.unauthorized('Not authorized to access this route');
   }
 
-  const decoded = jwt.verify(token, config.jwt.secret);
-  const user = await User.findById(decoded.id);
+  const decoded = jwt.verify(token, config.jwt.secret, { algorithms: ['HS256'] });
+  const user = await User.findById(decoded.id).select('+passwordChangedAt');
 
   if (!user) {
     throw ApiError.unauthorized('User not found');
@@ -23,6 +23,14 @@ exports.protect = asyncHandler(async (req, res, next) => {
 
   if (!user.isActive) {
     throw ApiError.unauthorized('Account is deactivated');
+  }
+
+  // Reject tokens issued before the user's most recent password change.
+  if (user.passwordChangedAt) {
+    const changedAtSec = Math.floor(new Date(user.passwordChangedAt).getTime() / 1000);
+    if (decoded.iat && changedAtSec > decoded.iat) {
+      throw ApiError.unauthorized('Session expired, please log in again');
+    }
   }
 
   req.user = user;
@@ -41,10 +49,15 @@ exports.optionalAuth = asyncHandler(async (req, res, next) => {
   if (!token) return next();
 
   try {
-    const decoded = jwt.verify(token, config.jwt.secret);
-    const user = await User.findById(decoded.id);
+    const decoded = jwt.verify(token, config.jwt.secret, { algorithms: ['HS256'] });
+    const user = await User.findById(decoded.id).select('+passwordChangedAt');
     if (user && user.isActive) {
-      req.user = user;
+      const changedAtSec = user.passwordChangedAt
+        ? Math.floor(new Date(user.passwordChangedAt).getTime() / 1000)
+        : 0;
+      if (!decoded.iat || changedAtSec <= decoded.iat) {
+        req.user = user;
+      }
     }
   } catch {
     // Ignore invalid tokens for optional auth.

@@ -19,15 +19,16 @@ const isOrderAccessible = (req, order) => {
     return scope === toId(order?.restaurant);
 };
 
-const RECEIPT_RESTAURANT = {
-    name: 'Layali Carthage',
-    address: 'Rue Zouhour Beni Khalled',
-    phone: '+216 76 77 77 77',
+// Fallbacks used only when a restaurant record is missing fields.
+const RECEIPT_DEFAULTS = {
+    name: 'Restaurant',
+    address: '',
+    phone: '',
 };
 
-const formatCurrencyTnd = (value) => {
+const formatCurrency = (value, currency = 'TND') => {
     const amount = Number(value || 0);
-    return `${amount.toFixed(2)} TND`;
+    return `${amount.toFixed(2)} ${currency}`;
 };
 
 const formatReceiptDateTime = (value) => {
@@ -226,6 +227,57 @@ exports.confirmCashPayment = asyncHandler(async (req, res) => {
     return ok(res, { payment: { ...payment.toObject(), stripeClientSecret: undefined } }, 'Payment completed');
 });
 
+// @desc   Stripe webhook — the reliable, async source of truth for card payments
+// @route  POST /api/payments/webhook  (raw body, no auth; verified by signature)
+exports.handleStripeWebhook = async (req, res) => {
+    if (!stripe) {
+        return res.status(503).json({ success: false, message: 'Stripe is not configured' });
+    }
+    if (!config.stripe.webhookSecret) {
+        return res.status(503).json({ success: false, message: 'Webhook secret is not configured' });
+    }
+
+    let event;
+    try {
+        event = stripe.webhooks.constructEvent(
+            req.body,
+            req.headers['stripe-signature'],
+            config.stripe.webhookSecret
+        );
+    } catch (err) {
+        return res.status(400).json({ success: false, message: `Webhook signature failed: ${err.message}` });
+    }
+
+    try {
+        if (event.type === 'payment_intent.succeeded') {
+            const intent = event.data.object;
+            const payment = await Payment.findOne({ stripePaymentIntentId: intent.id });
+            if (payment && payment.status !== 'completed') {
+                payment.status = 'completed';
+                payment.paidAt = Date.now();
+                await payment.save();
+
+                const order = await Order.findById(payment.order);
+                if (order) {
+                    order.paymentStatus = 'paid';
+                    order.paymentMethod = 'card';
+                    await order.save();
+                    getIO()?.to(`restaurant_${toId(order.restaurant)}`).emit('paymentCompleted', { order, payment });
+                }
+            }
+        } else if (event.type === 'payment_intent.payment_failed') {
+            await Payment.updateOne(
+                { stripePaymentIntentId: event.data.object.id },
+                { $set: { status: 'failed' } }
+            );
+        }
+
+        return res.status(200).json({ received: true });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: err.message });
+    }
+};
+
 exports.getPaymentByOrder = asyncHandler(async (req, res) => {
     const restaurantScope = getRestaurantScope(req);
     const paymentFilter = restaurantScope
@@ -243,6 +295,7 @@ exports.exportPaymentReceiptPdf = async (req, res) => {
 
         const order = await Order.findById(orderId)
             .populate('table', 'number')
+            .populate('restaurant', 'name address phone settings')
             .populate('items.menuItem');
 
         if (!order) {
@@ -285,6 +338,17 @@ exports.exportPaymentReceiptPdf = async (req, res) => {
         const tableNumber = order?.table?.number ?? '-';
         const printedAt = formatReceiptDateTime(new Date());
 
+        // Restaurant identity + currency come from the order's restaurant record.
+        const restaurantInfo =
+            order.restaurant && typeof order.restaurant === 'object' ? order.restaurant : null;
+        const receiptRestaurant = {
+            name: restaurantInfo?.name || RECEIPT_DEFAULTS.name,
+            address: restaurantInfo?.address || RECEIPT_DEFAULTS.address,
+            phone: restaurantInfo?.phone || RECEIPT_DEFAULTS.phone,
+        };
+        const currency = restaurantInfo?.settings?.currency || 'TND';
+        const formatMoney = (value) => formatCurrency(value, currency);
+
         const items = normalizeReceiptItems(order);
         const subtotal = items.reduce((sum, item) => sum + item.lineTotal, 0);
         const taxAmount = 0;
@@ -318,19 +382,19 @@ exports.exportPaymentReceiptPdf = async (req, res) => {
             y += 7;
         };
 
-        doc.font('Helvetica-Bold').fontSize(13).text(RECEIPT_RESTAURANT.name, margin, y, {
+        doc.font('Helvetica-Bold').fontSize(13).text(receiptRestaurant.name, margin, y, {
             width: contentWidth,
             align: 'center',
         });
         y += 16;
 
-        doc.font('Helvetica').fontSize(8.5).text(RECEIPT_RESTAURANT.address, margin, y, {
+        doc.font('Helvetica').fontSize(8.5).text(receiptRestaurant.address, margin, y, {
             width: contentWidth,
             align: 'center',
         });
         y += 11;
 
-        doc.font('Helvetica').fontSize(8.5).text(RECEIPT_RESTAURANT.phone, margin, y, {
+        doc.font('Helvetica').fontSize(8.5).text(receiptRestaurant.phone, margin, y, {
             width: contentWidth,
             align: 'center',
         });
@@ -385,12 +449,12 @@ exports.exportPaymentReceiptPdf = async (req, res) => {
                 align: 'right',
             });
 
-            doc.text(formatCurrencyTnd(item.unitPrice), unitX, y, {
+            doc.text(formatMoney(item.unitPrice), unitX, y, {
                 width: unitWidth,
                 align: 'right',
             });
 
-            doc.text(formatCurrencyTnd(item.lineTotal), totalX, y, {
+            doc.text(formatMoney(item.lineTotal), totalX, y, {
                 width: totalWidth,
                 align: 'right',
             });
@@ -402,11 +466,11 @@ exports.exportPaymentReceiptPdf = async (req, res) => {
 
         doc.font('Helvetica').fontSize(9);
         doc.text('Sous-total', margin, y);
-        doc.text(formatCurrencyTnd(subtotal), right, y, { align: 'right' });
+        doc.text(formatMoney(subtotal), right, y, { align: 'right' });
         y += 12;
 
         doc.text('Taxe (0%)', margin, y);
-        doc.text(formatCurrencyTnd(taxAmount), right, y, { align: 'right' });
+        doc.text(formatMoney(taxAmount), right, y, { align: 'right' });
         y += 13;
 
         doc
@@ -417,7 +481,7 @@ exports.exportPaymentReceiptPdf = async (req, res) => {
 
         doc.font('Helvetica-Bold').fontSize(11);
         doc.text('TOTAL', margin + 4, y + 2);
-        doc.text(formatCurrencyTnd(totalAmount), right - 4, y + 2, { align: 'right' });
+        doc.text(formatMoney(totalAmount), right - 4, y + 2, { align: 'right' });
         y += 22;
 
         drawDivider();
