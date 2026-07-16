@@ -29,6 +29,21 @@ const restaurantSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    // Geofence: diners can only order when physically near the restaurant.
+    // Dormant until a location is set (so it never blocks before it's configured).
+    location: {
+      lat: { type: Number },
+      lng: { type: Number },
+    },
+    geofenceRadius: {
+      type: Number,
+      default: 250, // metres
+    },
+    // Day (YYYY-MM-DD) of the last waiter-section assignment. The first
+    // rebalance of a new day does a full shuffle so sections rotate daily.
+    sectionsDay: {
+      type: String,
+    },
     owner: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

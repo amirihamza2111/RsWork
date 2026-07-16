@@ -63,6 +63,12 @@ async function ensureMenuItem(restaurant, category, data) {
     });
   }
 
+  // The manager owns the restaurant (so ownership-based lookups work too).
+  if (!restaurant.owner && users.manager) {
+    restaurant.owner = users.manager._id;
+    await restaurant.save();
+  }
+
   const plats = await ensureCategory(restaurant._id, { fr: 'Plats', en: 'Dishes', ar: 'أطباق' });
   const boissons = await ensureCategory(restaurant._id, { fr: 'Boissons', en: 'Drinks', ar: 'مشروبات' });
 

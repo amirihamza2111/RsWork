@@ -6,6 +6,10 @@ const ApiError = require('../utils/ApiError');
 const { ok, created } = require('../utils/apiResponse');
 const { toId, isSameRestaurant } = require('../utils/scope');
 const recommendationService = require('../services/recommendationService');
+const cache = require('../utils/microCache');
+
+// Bust every cached menu read for a restaurant after any menu mutation.
+const bustMenuCache = (restaurantId) => cache.delPrefix(`menu:${toId(restaurantId)}`);
 
 const parseMaybeJson = (value) => {
   if (typeof value !== 'string') return value;
@@ -31,8 +35,13 @@ const parseNumber = (value) => {
 
 // Public reads resolve the restaurant from the request; writes resolve it from
 // the authenticated manager (so a manager can only write to their own restaurant).
+// Falls back to the authenticated user's restaurant so managers don't need to
+// pass restaurantId explicitly on GET requests.
 const getReadRestaurantId = (req) =>
-  req.params.restaurantId || req.query.restaurantId || req.body.restaurant;
+  req.params.restaurantId ||
+  req.query.restaurantId ||
+  req.body?.restaurant ||
+  toId(req.user?.restaurant);
 
 const getWriteRestaurantId = (req) => {
   if (req.user?.role === 'superadmin') {
@@ -86,6 +95,7 @@ exports.createCategory = asyncHandler(async (req, res) => {
     order: parseNumber(order),
   });
 
+  bustMenuCache(restaurant);
   return created(res, { category }, 'Category created');
 });
 
@@ -93,10 +103,16 @@ exports.getCategories = asyncHandler(async (req, res) => {
   const restaurantId = getReadRestaurantId(req);
   if (!restaurantId) throw ApiError.badRequest('restaurantId is required');
 
+  const key = `menu:${toId(restaurantId)}:categories`;
+  const cached = cache.get(key);
+  if (cached) return ok(res, cached);
+
   const categories = await Category.find({ restaurant: restaurantId, isActive: true }).sort({
     order: 1,
   });
-  return ok(res, { count: categories.length, categories });
+  const payload = { count: categories.length, categories };
+  cache.set(key, payload);
+  return ok(res, payload);
 });
 
 exports.updateCategory = asyncHandler(async (req, res) => {
@@ -113,6 +129,7 @@ exports.updateCategory = asyncHandler(async (req, res) => {
   if (isActive !== undefined) category.isActive = parseBoolean(isActive);
 
   await category.save();
+  bustMenuCache(category.restaurant);
   return ok(res, { category }, 'Category updated');
 });
 
@@ -122,6 +139,7 @@ exports.deleteCategory = asyncHandler(async (req, res) => {
   if (!isSameRestaurant(req.user, category.restaurant)) throw ApiError.forbidden();
 
   await category.deleteOne();
+  bustMenuCache(category.restaurant);
   return ok(res, null, 'Category deleted successfully');
 });
 
@@ -163,6 +181,7 @@ exports.createMenuItem = asyncHandler(async (req, res) => {
     prepStation: prepStation === 'bar' ? 'bar' : 'kitchen',
   });
 
+  bustMenuCache(restaurant);
   return created(res, { menuItem }, 'Menu item created');
 });
 
@@ -171,12 +190,21 @@ exports.getMenuItems = asyncHandler(async (req, res) => {
   const restaurantId = getReadRestaurantId(req);
   if (!restaurantId) throw ApiError.badRequest('restaurantId is required');
 
+  const key = `menu:${toId(restaurantId)}:items:${categoryId || 'all'}:${isAvailable ?? 'all'}`;
+  const cached = cache.get(key);
+  if (cached) return ok(res, cached);
+
   const filter = { restaurant: restaurantId };
   if (categoryId) filter.category = categoryId;
   if (isAvailable !== undefined) filter.isAvailable = isAvailable === 'true';
 
-  const menuItems = await MenuItem.find(filter).populate('category').populate('restaurant');
-  return ok(res, { count: menuItems.length, menuItems });
+  // Only populate the category — the full restaurant doc isn't needed per item
+  // (currency/name come from context), and populating it on every item is a
+  // needless DB hit + payload bloat on the menu's hottest read path.
+  const menuItems = await MenuItem.find(filter).populate('category');
+  const payload = { count: menuItems.length, menuItems };
+  cache.set(key, payload);
+  return ok(res, payload);
 });
 
 exports.getMenuItemById = asyncHandler(async (req, res) => {
@@ -234,6 +262,7 @@ exports.updateMenuItem = asyncHandler(async (req, res) => {
   if (prepStation === 'kitchen' || prepStation === 'bar') menuItem.prepStation = prepStation;
 
   await menuItem.save();
+  bustMenuCache(menuItem.restaurant);
   return ok(res, { menuItem }, 'Menu item updated');
 });
 
@@ -244,6 +273,7 @@ exports.deleteMenuItem = asyncHandler(async (req, res) => {
 
   if (menuItem.image) await deleteCloudinaryImage(menuItem.image);
   await menuItem.deleteOne();
+  bustMenuCache(menuItem.restaurant);
   return ok(res, null, 'Menu item deleted successfully');
 });
 
@@ -254,6 +284,7 @@ exports.toggleAvailability = asyncHandler(async (req, res) => {
 
   menuItem.isAvailable = !menuItem.isAvailable;
   await menuItem.save();
+  bustMenuCache(menuItem.restaurant);
   return ok(res, { menuItem }, `Menu item ${menuItem.isAvailable ? 'enabled' : 'disabled'}`);
 });
 

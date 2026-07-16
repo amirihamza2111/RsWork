@@ -114,10 +114,16 @@ test('tables: manager creates a table with a QR code', async () => {
 });
 
 test('orders: placing an order ignores client-sent prices (no tampering)', async () => {
+  // Public orders require a live table session (QR scan) since the anti-abuse work.
+  const sess = await api(`/api/tables/${state.tableId}/session`, { method: 'POST' });
+  assert.equal(sess.status, 200);
+  state.sessionId = (await sess.json()).data.session.id;
+
   const res = await api('/api/orders', {
     method: 'POST',
     body: {
       table: state.tableId,
+      sessionId: state.sessionId,
       items: [
         { menuItem: state.pizzaId, quantity: 2, price: 1 }, // bogus price
         { menuItem: state.cokeId, quantity: 1, price: 1 },
@@ -139,7 +145,7 @@ test('orders: placing an order ignores client-sent prices (no tampering)', async
 test('orders: invalid menu item is rejected', async () => {
   const res = await api('/api/orders', {
     method: 'POST',
-    body: { table: state.tableId, items: [{ menuItem: '64b000000000000000000000', quantity: 1 }] },
+    body: { table: state.tableId, sessionId: state.sessionId, items: [{ menuItem: '64b000000000000000000000', quantity: 1 }] },
   });
   assert.equal(res.status, 400);
 });

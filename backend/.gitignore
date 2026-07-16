@@ -5,6 +5,7 @@ node_modules/
 .env.*
 *.local
 !.env.example
+!.env.*.example
 # Logs / OS
 *.log
 .DS_Store

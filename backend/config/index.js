@@ -38,6 +38,7 @@ const config = {
   clientUrl: process.env.CLIENT_URL || '',
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY || '',
+    publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
     currency: (process.env.STRIPE_CURRENCY || 'usd').toLowerCase(),
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
   },
@@ -69,6 +70,18 @@ const config = {
     groqApiKey: process.env.GROQ_API_KEY || '',
     model: process.env.AI_MODEL || '',
     timeoutMs: Number(process.env.AI_TIMEOUT_MS) || 20000,
+  },
+  // Anti-abuse caps for public (QR) ordering. A photographed QR can't flood a
+  // table: orders are capped and the open (unpaid) tab is bounded.
+  orders: {
+    maxActivePerTable: Number(process.env.MAX_ACTIVE_ORDERS_PER_TABLE) || 5,
+    maxOpenTab: Number(process.env.MAX_OPEN_TAB_AMOUNT) || 1000,
+  },
+  // Web Push (VAPID). Optional — push is silently disabled when keys are absent.
+  vapid: {
+    publicKey: process.env.VAPID_PUBLIC_KEY || '',
+    privateKey: process.env.VAPID_PRIVATE_KEY || '',
+    contact: process.env.VAPID_CONTACT || 'mailto:admin@rswork.com',
   },
 };
 

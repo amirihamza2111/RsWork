@@ -8,15 +8,14 @@ const { ok, created } = require('../utils/apiResponse');
 const { sendEmailSafe } = require('../services/emailService');
 const { verificationEmail, passwordResetEmail } = require('../services/emailTemplates');
 
-const verifyUrl = (rawToken) => `${config.clientUrl}/verify-email?token=${rawToken}`;
 const resetUrl = (rawToken) => `${config.clientUrl}/reset-password?token=${rawToken}`;
 
-// Issues an email-verification token, saves it, and emails the link.
+// Issues a 6-digit email verification code, saves its hash, and emails the code.
 const issueEmailVerification = async (user) => {
-  const rawToken = user.createEmailVerificationToken();
+  const code = user.createEmailVerificationToken();
   await user.save();
-  await sendEmailSafe({ to: user.email, ...verificationEmail(user.name, verifyUrl(rawToken)) });
-  return rawToken;
+  await sendEmailSafe({ to: user.email, ...verificationEmail(user.name, code) });
+  return code;
 };
 
 const generateToken = (id) =>
@@ -96,11 +95,27 @@ exports.getMe = asyncHandler(async (req, res) => {
 // @route  POST /api/auth/register-restaurant
 // @access Public
 exports.registerRestaurant = asyncHandler(async (req, res) => {
-  const { restaurantName, name, email, password, type, address, phone, currency, language } =
-    req.body;
+  const {
+    restaurantName,
+    name,
+    email,
+    password,
+    confirmPassword,
+    type,
+    address,
+    phone,
+    currency,
+    language,
+  } = req.body;
 
   if (!restaurantName || !name || !email || !password) {
     throw ApiError.badRequest('Please provide restaurantName, name, email, and password');
+  }
+
+  // confirmPassword is optional in the body (older clients still work), but if
+  // sent it must match — this prevents password typos during onboarding.
+  if (confirmPassword !== undefined && confirmPassword !== password) {
+    throw ApiError.badRequest('Passwords do not match');
   }
 
   const normalizedEmail = String(email).trim().toLowerCase();
@@ -161,7 +176,9 @@ exports.changePassword = asyncHandler(async (req, res) => {
 
   user.password = newPassword; // hashed by the pre-save hook
   await user.save();
-  return ok(res, null, 'Password changed');
+  // The save bumps passwordChangedAt, which would invalidate the caller's
+  // current token — so issue a fresh one to keep this session alive.
+  return ok(res, { token: generateToken(user._id) }, 'Password changed');
 });
 
 // @desc   Begin a password reset (issues a reset token)

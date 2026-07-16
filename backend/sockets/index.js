@@ -2,6 +2,7 @@ const socketIo = require('socket.io');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const config = require('../config');
+const sectionService = require('../services/sectionService');
 
 const isAllowedOrigin = (origin) => {
   if (!origin) return true;
@@ -49,9 +50,15 @@ const initSocket = (server) => {
   io.on('connection', (socket) => {
     console.log(`Socket connected: ${socket.id}`);
 
+    // A waiter coming online / going offline triggers a (debounced) section
+    // rebalance so tables are always spread across the connected waiters.
+    const isWaiter = socket.user?.role === 'waiter' && socket.user?.restaurant;
     if (socket.user?.role === 'waiter') {
       socket.join(`waiter_${socket.user._id}`);
       console.log(`Socket ${socket.id} joined personal waiter room: waiter_${socket.user._id}`);
+    }
+    if (isWaiter) {
+      sectionService.waiterConnected(socket.user.restaurant, socket.user._id);
     }
     socket.on('joinRestaurant', (restaurantId) => {
       socket.join(`restaurant_${restaurantId}`);
@@ -62,6 +69,9 @@ const initSocket = (server) => {
       console.log(`Socket ${socket.id} joined table room: table_${tableId}`);
     });
     socket.on('disconnect', () => {
+      if (isWaiter) {
+        sectionService.waiterDisconnected(socket.user.restaurant, socket.user._id);
+      }
       console.log(`Socket disconnected: ${socket.id}`);
     });
   });

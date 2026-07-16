@@ -10,6 +10,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const { ok } = require('../utils/apiResponse');
 const { toId, getRestaurantScope: scopeOf } = require('../utils/scope');
+const { parsePagination, meta } = require('../utils/pagination');
 
 const getRestaurantScope = (req) => scopeOf(req.user);
 
@@ -30,6 +31,10 @@ const formatCurrency = (value, currency = 'TND') => {
     const amount = Number(value || 0);
     return `${amount.toFixed(2)} ${currency}`;
 };
+
+// Plain number (no currency suffix) for the tight per-line columns of an 80mm
+// thermal receipt — the currency is shown once, on the TOTAL line.
+const formatAmount = (value) => Number(value || 0).toFixed(2);
 
 const formatReceiptDateTime = (value) => {
     const date = value ? new Date(value) : new Date();
@@ -94,6 +99,17 @@ const sanitizeTicketSegment = (value) => {
     return String(value || 'receipt').replace(/[^a-z0-9-_]/gi, '_');
 };
 
+// @desc   Public payment config for the diner app. The publishable key is safe
+//         to expose; when blank, online card payment is disabled client-side.
+// @route  GET /api/payments/config
+exports.getPublicConfig = asyncHandler(async (req, res) => {
+    return ok(res, {
+        cardEnabled: Boolean(stripe && config.stripe.publishableKey),
+        publishableKey: config.stripe.publishableKey || null,
+        currency: config.stripe.currency,
+    });
+});
+
 exports.getPayments = asyncHandler(async (req, res) => {
     const { status, method, startDate, endDate } = req.query;
     const restaurantId = getRestaurantScope(req);
@@ -111,12 +127,19 @@ exports.getPayments = asyncHandler(async (req, res) => {
         if (endDate) filter.createdAt.$lte = new Date(endDate);
     }
 
-    const payments = await Payment.find(filter)
-        .select('-stripeClientSecret')
-        .populate('order')
-        .sort({ createdAt: -1 });
+    const { page, limit, skip } = parsePagination(req.query);
+    const [payments, total] = await Promise.all([
+        Payment.find(filter)
+            .select('-stripeClientSecret')
+            .populate('order', 'orderNumber totalAmount paymentStatus table')
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean(),
+        Payment.countDocuments(filter),
+    ]);
 
-    return ok(res, { count: payments.length, payments });
+    return ok(res, { count: payments.length, payments, ...meta(total, page, limit) });
 });
 
 exports.initiateCashPayment = asyncHandler(async (req, res) => {
@@ -124,14 +147,25 @@ exports.initiateCashPayment = asyncHandler(async (req, res) => {
     const order = await Order.findById(orderId).populate('table');
     if (!order) throw ApiError.notFound('Order not found');
     if (!isOrderAccessible(req, order)) throw ApiError.forbidden();
+    if (order.status === 'cancelled') throw ApiError.badRequest('Order is cancelled');
+    if (order.paymentStatus === 'paid') throw ApiError.badRequest('Order is already paid');
 
-    const payment = await Payment.create({
-        order: order._id,
-        restaurant: order.restaurant,
-        amount: order.totalAmount,
-        method: 'cash',
-        status: 'pending',
-    });
+    // Reuse a pending payment if one already exists for this order (e.g. the
+    // diner pre-selected cash at order time) so we don't leave an orphan behind.
+    let payment = await Payment.findOne({ order: order._id, status: 'pending' });
+    if (payment) {
+        payment.method = 'cash';
+        payment.amount = order.totalAmount;
+        await payment.save();
+    } else {
+        payment = await Payment.create({
+            order: order._id,
+            restaurant: order.restaurant,
+            amount: order.totalAmount,
+            method: 'cash',
+            status: 'pending',
+        });
+    }
     order.paymentStatus = 'unpaid';
     order.paymentMethod = 'cash';
     await order.save();
@@ -150,6 +184,18 @@ exports.initiateCardPayment = asyncHandler(async (req, res) => {
     const order = await Order.findById(orderId);
     if (!order) throw ApiError.notFound('Order not found');
     if (!isOrderAccessible(req, order)) throw ApiError.forbidden();
+    if (order.status === 'cancelled') throw ApiError.badRequest('Order is cancelled');
+    if (order.paymentStatus === 'paid') throw ApiError.badRequest('Order is already paid');
+
+    // Reuse the pending card payment when the amount hasn't changed, so repeated
+    // taps (or refreshes) don't pile up orphan PaymentIntents.
+    let payment = await Payment.findOne({ order: order._id, method: 'card', status: 'pending' });
+    if (
+        payment?.stripeClientSecret &&
+        Number(payment.amount) === Number(order.totalAmount)
+    ) {
+        return ok(res, { clientSecret: payment.stripeClientSecret, paymentId: payment._id });
+    }
 
     const amountInCents = Math.round(order.totalAmount * 100);
     const paymentIntent = await stripe.paymentIntents.create({
@@ -159,15 +205,22 @@ exports.initiateCardPayment = asyncHandler(async (req, res) => {
         metadata: { orderId: order._id.toString() },
     });
 
-    const payment = await Payment.create({
-        order: order._id,
-        restaurant: order.restaurant,
-        amount: order.totalAmount,
-        method: 'card',
-        status: 'pending',
-        stripePaymentIntentId: paymentIntent.id,
-        stripeClientSecret: paymentIntent.client_secret,
-    });
+    if (payment) {
+        payment.amount = order.totalAmount;
+        payment.stripePaymentIntentId = paymentIntent.id;
+        payment.stripeClientSecret = paymentIntent.client_secret;
+        await payment.save();
+    } else {
+        payment = await Payment.create({
+            order: order._id,
+            restaurant: order.restaurant,
+            amount: order.totalAmount,
+            method: 'card',
+            status: 'pending',
+            stripePaymentIntentId: paymentIntent.id,
+            stripeClientSecret: paymentIntent.client_secret,
+        });
+    }
 
     return ok(res, { clientSecret: payment.stripeClientSecret, paymentId: payment._id });
 });
@@ -449,12 +502,12 @@ exports.exportPaymentReceiptPdf = async (req, res) => {
                 align: 'right',
             });
 
-            doc.text(formatMoney(item.unitPrice), unitX, y, {
+            doc.text(formatAmount(item.unitPrice), unitX, y, {
                 width: unitWidth,
                 align: 'right',
             });
 
-            doc.text(formatMoney(item.lineTotal), totalX, y, {
+            doc.text(formatAmount(item.lineTotal), totalX, y, {
                 width: totalWidth,
                 align: 'right',
             });
@@ -464,13 +517,16 @@ exports.exportPaymentReceiptPdf = async (req, res) => {
 
         drawDivider();
 
+        // Right-align amounts across the full content width. Passing the right
+        // edge as x with no width makes PDFKit compute a ~0-width box and wrap
+        // every character — the cause of the shattered vertical totals.
         doc.font('Helvetica').fontSize(9);
         doc.text('Sous-total', margin, y);
-        doc.text(formatMoney(subtotal), right, y, { align: 'right' });
+        doc.text(formatMoney(subtotal), margin, y, { width: contentWidth, align: 'right' });
         y += 12;
 
         doc.text('Taxe (0%)', margin, y);
-        doc.text(formatMoney(taxAmount), right, y, { align: 'right' });
+        doc.text(formatMoney(taxAmount), margin, y, { width: contentWidth, align: 'right' });
         y += 13;
 
         doc
@@ -481,7 +537,10 @@ exports.exportPaymentReceiptPdf = async (req, res) => {
 
         doc.font('Helvetica-Bold').fontSize(11);
         doc.text('TOTAL', margin + 4, y + 2);
-        doc.text(formatMoney(totalAmount), right - 4, y + 2, { align: 'right' });
+        doc.text(formatMoney(totalAmount), margin + 4, y + 2, {
+            width: contentWidth - 8,
+            align: 'right',
+        });
         y += 22;
 
         drawDivider();

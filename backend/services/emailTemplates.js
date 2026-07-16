@@ -19,11 +19,15 @@ const button = (url, label) =>
   `<p><a href="${url}" style="display:inline-block;background:#111;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;">${label}</a></p>
    <p style="font-size:12px;color:#666;">Or paste this link: ${url}</p>`;
 
-const verificationEmail = (name, url) => ({
-  subject: 'Verify your RsWork email',
+const verificationEmail = (name, code) => ({
+  subject: 'Your RsWork verification code',
   html: wrapper(
     `Welcome${name ? `, ${escapeHtml(name)}` : ''}!`,
-    `<p>Please verify your email to finish setting up your RsWork account.</p>${button(url, 'Verify email')}<p style="font-size:12px;color:#666;">This link expires in 24 hours.</p>`
+    `<p>Enter this code in RsWork to verify your email address:</p>
+     <p style="margin:20px 0;text-align:center;">
+       <span style="display:inline-block;font-family:'SF Mono',Menlo,monospace;font-size:32px;font-weight:600;letter-spacing:8px;padding:14px 24px;background:#f4f7f9;border-radius:8px;color:#111;">${escapeHtml(code)}</span>
+     </p>
+     <p style="font-size:12px;color:#666;">This code expires in 15 minutes. If you didn't create an RsWork account, ignore this email.</p>`
   ),
 });
 

@@ -1,3 +1,4 @@
+require('./instrument'); // must be first — initializes Sentry before app loads
 const config = require('./config');
 const http = require('http');
 const mongoose = require('mongoose');
@@ -10,7 +11,8 @@ const server = http.createServer(app);
 const start = async () => {
   await connectDB();
   initSocket(server);
-  server.listen(config.port, () => {
+  // Listen on 0.0.0.0 to accept connections from LAN devices
+  server.listen(config.port, '0.0.0.0', () => {
     console.log(`Server running on port ${config.port} [${config.nodeEnv}]`);
   });
 };

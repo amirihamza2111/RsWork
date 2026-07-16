@@ -1,0 +1,86 @@
+# RsWork — Render Blueprint (backend API + forecast microservice).
+# Deploy: Render Dashboard → New → Blueprint → connect this repo.
+# Secrets (sync:false) are set in the Render dashboard, never committed.
+# The frontend deploys separately on Vercel (see frontend/vercel.json + DEPLOYMENT.md).
+services:
+  # ---------------------------- Node API ----------------------------
+  - type: web
+    name: rswork-api
+    runtime: node
+    plan: free
+    region: frankfurt
+    branch: main
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # A strong secret generated once by Render and kept stable.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      # Forecast service (internal). Optional — the API falls back if it's down.
+      - key: ML_SERVICE_URL
+        fromService:
+          type: web
+          name: rswork-ml
+          property: hostport
+      # --- Set these in the dashboard (never in git) ---
+      - key: DB_URI                 # MongoDB Atlas SRV connection string
+        sync: false
+      - key: CLIENT_URL             # https://<your-vercel-domain>  (used for QR links)
+        sync: false
+      - key: CORS_ORIGINS           # https://<your-vercel-domain> (comma-separated)
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_CURRENCY
+        value: usd
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: EMAIL_PROVIDER
+        value: resend
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM             # RsWork <no-reply@your-verified-domain>
+        sync: false
+      - key: AI_PROVIDER
+        value: groq
+      - key: GROQ_API_KEY
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_CONTACT
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+
+  # ------------------------ Forecast service ------------------------
+  - type: web
+    name: rswork-ml
+    runtime: python
+    plan: free
+    region: frankfurt
+    branch: main
+    rootDir: ml-service
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.4"

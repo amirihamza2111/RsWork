@@ -6,9 +6,14 @@ backend/node_modules/
 .env
 .env.*
 *.local
-# ...but keep the safe templates
+# ...but keep the safe templates (.env.example, .env.production.example, ...)
 !.env.example
 !**/.env.example
+!.env.*.example
+!**/.env.*.example
+
+# Local agent / editor tooling
+.claude/
 
 # Python (ml-service)
 ml-service/.venv/

@@ -7,12 +7,16 @@ const {
   updateTable,
   deleteTable,
   regenerateAllQRCodes,
+  autoAssignTables,
   getTableByQR,
+  openTableSession,
   releaseTableSession,
 } = require('../controllers/tableController');
 router.post('/', protect, authorize('manager'), createTable);
 router.get('/', protect, getTables);
 router.post('/regenerate-all-qr', protect, authorize('manager', 'superadmin'), regenerateAllQRCodes);
+router.post('/auto-assign', protect, authorize('manager', 'superadmin'), autoAssignTables);
+router.post('/:id/session', openTableSession);
 router.post('/:id/release', releaseTableSession);
 router.put('/:id', protect, authorize('manager'), updateTable);
 router.delete('/:id', protect, authorize('manager'), deleteTable);

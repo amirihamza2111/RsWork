@@ -21,14 +21,39 @@ exports.createRestaurant = asyncHandler(async (req, res) => {
   return created(res, { restaurant }, 'Restaurant created');
 });
 
+// @desc   Every restaurant this user can switch to (the multi-restaurant picker).
+//         Owners get all restaurants they own; staff get their scoped one.
+// @route  GET /api/restaurants/mine
+exports.getMyRestaurants = asyncHandler(async (req, res) => {
+  const filter =
+    req.user.role === 'superadmin'
+      ? {}
+      : {
+          $or: [
+            { owner: req.user._id },
+            ...(req.user.restaurant ? [{ _id: req.user.restaurant }] : []),
+          ],
+        };
+  const restaurants = await Restaurant.find(filter).select('name logo settings isActive').sort({ name: 1 });
+  return ok(res, { count: restaurants.length, restaurants });
+});
+
 exports.getMyRestaurant = asyncHandler(async (req, res) => {
-  const restaurant = await Restaurant.findOne({ owner: req.user._id });
+  // Resolve via the user's restaurant ref first (works for any manager/staff),
+  // falling back to ownership. Supports multi-manager restaurants.
+  let restaurant = null;
+  if (req.user.restaurant) {
+    restaurant = await Restaurant.findById(req.user.restaurant);
+  }
+  if (!restaurant) {
+    restaurant = await Restaurant.findOne({ owner: req.user._id });
+  }
   if (!restaurant) throw ApiError.notFound('Restaurant not found');
   return ok(res, { restaurant });
 });
 
 exports.updateRestaurant = asyncHandler(async (req, res) => {
-  const { name, address, phone, logo, settings } = req.body;
+  const { name, address, phone, logo, settings, location, geofenceRadius } = req.body;
   const restaurant = await Restaurant.findById(req.params.id);
   if (!restaurant) throw ApiError.notFound('Restaurant not found');
 
@@ -44,6 +69,13 @@ exports.updateRestaurant = asyncHandler(async (req, res) => {
   if (phone) restaurant.phone = phone;
   if (logo) restaurant.logo = logo;
   if (settings) restaurant.settings = settings;
+  // Geofence config for QR ordering. `location: null` turns the geofence off.
+  if (location === null) {
+    restaurant.location = undefined;
+  } else if (location && typeof location.lat === 'number' && typeof location.lng === 'number') {
+    restaurant.location = { lat: location.lat, lng: location.lng };
+  }
+  if (geofenceRadius != null) restaurant.geofenceRadius = Number(geofenceRadius);
   await restaurant.save();
   return ok(res, { restaurant }, 'Restaurant updated');
 });

@@ -24,6 +24,20 @@ const orderSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
     },
+    // KDS claim-on-start: the cook who took this ticket. Other KDS screens see
+    // it as "in progress by X" and can't re-prepare it. Set atomically.
+    preparedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+    preparedByName: {
+      type: String,
+    },
+    // The waiter who served it — set atomically so two waiters can't both serve.
+    servedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
     items: [
       {
         menuItem: {

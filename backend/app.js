@@ -1,5 +1,6 @@
 const express = require('express');
 const helmet = require('helmet');
+const compression = require('compression');
 const cors = require('cors');
 const morgan = require('morgan');
 const config = require('./config');
@@ -13,6 +14,8 @@ app.set('trust proxy', 1);
 // notation, which neutralises `?key[$ne]=...` NoSQL operator injection.
 app.set('query parser', 'simple');
 app.use(helmet());
+// Gzip/deflate response bodies — the trilingual menu JSON shrinks ~5-10x.
+app.use(compression());
 
 const isAllowedOrigin = (origin) => {
   // Allow non-browser clients (no Origin header) such as curl / mobile apps.
@@ -62,6 +65,7 @@ app.use('/api/orders', require('./routes/orders'));
 app.use('/api/staff', require('./routes/staff'));
 app.use('/api/reports', require('./routes/reports'));
 app.use('/api/feedbacks', require('./routes/feedbacks'));
+app.use('/api/push', require('./routes/push'));
 
 app.get('/health', (req, res) => {
   res.status(200).json({ success: true, message: 'Server is running' });
@@ -73,6 +77,13 @@ app.use((req, res) => {
     message: `Route ${req.originalUrl} not found`,
   });
 });
+
+// Sentry's error handler must sit after routes and before our own — it reports
+// the error to Sentry, then lets errorHandler shape the client response.
+const { Sentry, enabled: sentryEnabled } = require('./instrument');
+if (sentryEnabled) {
+  Sentry.setupExpressErrorHandler(app);
+}
 
 app.use(errorHandler);
 

@@ -2,6 +2,8 @@ const Order = require('../models/Order');
 const Table = require('../models/Table');
 const MenuItem = require('../models/MenuItem');
 const Payment = require('../models/Payment');
+const Restaurant = require('../models/Restaurant');
+const config = require('../config');
 const { getIO } = require('../sockets/index');
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
@@ -9,6 +11,9 @@ const { ok, created } = require('../utils/apiResponse');
 const { toId, isSameRestaurant } = require('../utils/scope');
 const { sanitizeText } = require('../utils/sanitizeText');
 const { redactOrderForPublic } = require('../utils/orderView');
+const { distanceMeters } = require('../utils/geo');
+const { isValidOrderSession } = require('../utils/tableSession');
+const { sendToRestaurantWaiters, sendToUser } = require('../services/pushService');
 const {
   ORDER_STATUSES,
   ITEM_STATUSES,
@@ -30,6 +35,22 @@ const canViewOrderPII = (user, order) => {
 };
 
 const ACTIVE_STATUSES = ['pending', 'confirmed', 'preparing', 'ready'];
+
+// Notify the waiter responsible for a ready order: the assigned/claiming waiter
+// gets a targeted push; if the order has no waiter yet, fall back to the floor.
+const notifyOrderReady = (order) => {
+  const payload = {
+    title: `Table ${order.table?.number ?? ''} ready`,
+    body: `${order.orderNumber} is ready to serve`,
+    tag: `order-${order._id}`,
+    url: '/waiter',
+  };
+  if (toId(order.waiter)) {
+    sendToUser(toId(order.waiter), payload).catch(() => {});
+  } else {
+    sendToRestaurantWaiters(toId(order.restaurant), payload).catch(() => {});
+  }
+};
 
 const POPULATE = [
   'restaurant',
@@ -80,7 +101,7 @@ const emitOrderEventToRooms = (io, order, eventName) => {
 // @desc   Place an order (public — placed by a diner after scanning the table QR)
 // @route  POST /api/orders
 exports.createOrder = asyncHandler(async (req, res) => {
-  const { table, items, notes, paymentMethod, client, waiter } = req.body;
+  const { table, items, notes, paymentMethod, client, waiter, sessionId } = req.body;
 
   if (!table || !Array.isArray(items) || items.length === 0) {
     throw ApiError.badRequest('Please provide table and at least one item');
@@ -89,6 +110,35 @@ exports.createOrder = asyncHandler(async (req, res) => {
   const tableDocument = await Table.findById(table);
   if (!tableDocument) {
     throw ApiError.badRequest('Invalid table');
+  }
+
+  // Public (diner) orders must carry the table's current, unexpired session id.
+  // Staff place orders authenticated, so they bypass this. This is what stops a
+  // photographed QR from ordering once the table has been released.
+  const isStaff =
+    Boolean(req.user) &&
+    ['waiter', 'cook', 'cashier', 'manager', 'superadmin'].includes(req.user.role);
+  if (!isStaff) {
+    if (!isValidOrderSession(tableDocument.session, sessionId)) {
+      throw ApiError.forbidden('Your table session is invalid or expired — please rescan the QR code.');
+    }
+
+    // Geofence: when the restaurant has a location configured, the diner must be
+    // physically near it. Dormant (skipped) until the manager sets coordinates,
+    // so it never blocks before it's configured.
+    const geo = await Restaurant.findById(tableDocument.restaurant)
+      .select('location geofenceRadius')
+      .lean();
+    if (geo?.location?.lat != null && geo.location.lng != null) {
+      const { lat, lng } = req.body;
+      if (typeof lat !== 'number' || typeof lng !== 'number') {
+        throw ApiError.forbidden('Please enable location so we can confirm you are at the restaurant.');
+      }
+      const dist = distanceMeters(geo.location, { lat, lng });
+      if (dist > (geo.geofenceRadius || 250)) {
+        throw ApiError.forbidden('You appear to be away from the restaurant, so ordering is disabled.');
+      }
+    }
   }
 
   // Restaurant is derived from the table, never trusted from the request body.
@@ -120,9 +170,33 @@ exports.createOrder = asyncHandler(async (req, res) => {
 
   const totalAmount = orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
+  // Anti-abuse caps (Problem 3): a photographed QR can't flood a table. Cap the
+  // number of open orders and the total unpaid tab per table.
+  const openFilter = {
+    table: tableDocument._id,
+    status: { $in: ACTIVE_STATUSES },
+    paymentStatus: { $ne: 'paid' },
+  };
+  const activeCount = await Order.countDocuments(openFilter);
+  if (activeCount >= config.orders.maxActivePerTable) {
+    throw ApiError.badRequest('This table has too many open orders — please ask a staff member.');
+  }
+  const [openAgg] = await Order.aggregate([
+    { $match: openFilter },
+    { $group: { _id: null, sum: { $sum: '$totalAmount' } } },
+  ]);
+  if ((openAgg?.sum || 0) + totalAmount > config.orders.maxOpenTab) {
+    throw ApiError.badRequest('This table has reached its open-tab limit — please settle the bill first.');
+  }
+
   // Attach the caller's identity when known, instead of trusting body ids.
   const orderClient = req.user?.role === 'client' ? req.user._id : client || undefined;
-  const orderWaiter = req.user?.role === 'waiter' ? req.user._id : waiter || undefined;
+  // Section routing (Problem 1): a waiter who places it owns it; otherwise route
+  // to the table's assigned waiter so the "ready" ping targets one person.
+  const orderWaiter =
+    req.user?.role === 'waiter'
+      ? req.user._id
+      : waiter || tableDocument.assignedWaiter || undefined;
 
   const order = await Order.create({
     restaurant,
@@ -231,39 +305,47 @@ exports.updateOrderStatus = asyncHandler(async (req, res) => {
     throw ApiError.badRequest(`Cannot change order status from '${order.status}' to '${status}'`);
   }
 
+  const set = { status };
   // A waiter who picks up an unassigned order becomes its waiter.
-  if (req.user.role === 'waiter' && !toId(order.waiter)) {
-    order.waiter = req.user._id;
-  }
-
-  // Keep item statuses consistent with terminal order states.
+  if (req.user.role === 'waiter' && !toId(order.waiter)) set.waiter = req.user._id;
+  // Serving is a race — two waiters may tap at once. Record who served and mark
+  // every item served in the same atomic write.
   if (status === 'served') {
-    order.items.forEach((item) => {
-      item.status = 'served';
-    });
+    set.servedBy = req.user._id;
+    set['items.$[].status'] = 'served';
   }
 
-  order.status = status;
-  await order.save();
-  await order.populate(POPULATE);
+  // Optimistic concurrency: only transition if the status is still what we read,
+  // so the loser of a double-tap gets a clear 409 instead of a silent re-action.
+  const updated = await Order.findOneAndUpdate(
+    { _id: order._id, status: order.status },
+    { $set: set },
+    { new: true }
+  ).populate(POPULATE);
+
+  if (!updated) {
+    const fresh = await Order.findById(order._id).select('status');
+    throw ApiError.conflict(`Order was already moved to '${fresh?.status ?? 'another status'}'`);
+  }
 
   const io = getIO();
-  emitOrderEventToRooms(io, order, 'order_updated');
-  emitOrderEventToRooms(io, order, 'orderStatusUpdated'); // backward-compatible
+  emitOrderEventToRooms(io, updated, 'order_updated');
+  emitOrderEventToRooms(io, updated, 'orderStatusUpdated'); // backward-compatible
 
   if (status === 'ready') {
-    emitOrderEventToRooms(io, order, 'order_ready');
-    if (order.waiter) {
-      io?.to(`waiter_${toId(order.waiter)}`).emit('order_ready', {
-        orderId: order._id,
-        orderNumber: order.orderNumber,
-        tableId: toId(order.table),
+    emitOrderEventToRooms(io, updated, 'order_ready');
+    if (updated.waiter) {
+      io?.to(`waiter_${toId(updated.waiter)}`).emit('order_ready', {
+        orderId: updated._id,
+        orderNumber: updated.orderNumber,
+        tableId: toId(updated.table),
         message: 'Your order is ready to serve',
       });
     }
+    notifyOrderReady(updated);
   }
 
-  return ok(res, { order }, 'Order updated');
+  return ok(res, { order: updated }, 'Order updated');
 });
 
 // @desc   Active orders for a table
@@ -315,6 +397,32 @@ exports.cancelOrder = asyncHandler(async (req, res) => {
   return ok(res, { order }, 'Order cancelled successfully');
 });
 
+// @desc   Diner asks to pay at the table — notifies the cashier/waiter to come.
+// @route  POST /api/orders/:id/request-bill
+// @access Public (diner)
+exports.requestBill = asyncHandler(async (req, res) => {
+  const method = req.body?.method === 'card' ? 'card' : 'cash';
+  const order = await Order.findById(req.params.id).populate('table', 'number');
+  if (!order) throw ApiError.notFound('Order not found');
+  // Don't ping staff for bills that can't be settled (spam guard).
+  if (order.paymentStatus === 'paid') throw ApiError.badRequest('Order is already paid');
+  if (order.status === 'cancelled') throw ApiError.badRequest('Order is cancelled');
+
+  const io = getIO();
+  const payload = {
+    orderId: order._id,
+    orderNumber: order.orderNumber,
+    table: order.table,
+    method,
+  };
+  io?.to(`restaurant_${toId(order.restaurant)}`).emit('bill_requested', payload);
+  if (toId(order.waiter)) {
+    io?.to(`waiter_${toId(order.waiter)}`).emit('bill_requested', payload);
+  }
+
+  return ok(res, { requested: true, method }, 'Staff have been notified');
+});
+
 // Resolve the restaurant scope for staff endpoints (superadmin may pass ?restaurantId).
 const resolveStaffRestaurant = (req) => {
   if (req.user.role === 'superadmin') return req.query.restaurantId || null;
@@ -332,13 +440,80 @@ exports.getKdsOrders = asyncHandler(async (req, res) => {
 
   const orders = await Order.find({
     restaurant,
-    status: { $in: ACTIVE_STATUSES },
+    status: { $in: ACTIVE_STATUSES }, // show orders immediately — the geofence is the gate
   })
     .populate('table', 'number')
+    .populate('waiter', 'name')
     .populate('items.menuItem', 'name prepStation')
     .sort({ createdAt: 1 }); // oldest first = front of the queue
 
   return ok(res, { count: orders.length, orders });
+});
+
+// @desc   Incoming orders awaiting staff confirmation (the anti-abuse accept queue)
+// @route  GET /api/orders/incoming
+// @access waiter / cook / manager / superadmin
+exports.getIncomingOrders = asyncHandler(async (req, res) => {
+  const restaurant = resolveStaffRestaurant(req);
+  if (!restaurant) {
+    throw ApiError.forbidden('Restaurant context is required');
+  }
+
+  const orders = await Order.find({ restaurant, status: 'pending' })
+    .populate(POPULATE)
+    .sort({ createdAt: 1 });
+
+  return ok(res, { count: orders.length, orders });
+});
+
+// @desc   Confirm (accept) a pending order so the kitchen can start it
+// @route  PUT /api/orders/:id/confirm
+// @access waiter / cook / manager / superadmin
+exports.confirmOrder = asyncHandler(async (req, res) => {
+  const order = await Order.findById(req.params.id);
+  if (!order) throw ApiError.notFound('Order not found');
+  if (!canUpdateOrderStatus(req.user, order)) throw ApiError.forbidden();
+
+  if (order.status !== 'pending') {
+    throw ApiError.badRequest(`Only pending orders can be confirmed (this one is '${order.status}')`);
+  }
+
+  const updated = await Order.findOneAndUpdate(
+    { _id: order._id, status: 'pending' },
+    { $set: { status: 'confirmed' } },
+    { new: true }
+  ).populate(POPULATE);
+
+  if (!updated) throw ApiError.conflict('Order is no longer pending');
+
+  const io = getIO();
+  emitOrderEventToRooms(io, updated, 'order_updated');
+  emitOrderEventToRooms(io, updated, 'order_confirmed');
+
+  return ok(res, { order: updated }, 'Order confirmed');
+});
+
+// @desc   A waiter claims an unassigned order (atomic — first claimer wins)
+// @route  PUT /api/orders/:id/claim
+// @access waiter / manager / superadmin
+exports.claimOrder = asyncHandler(async (req, res) => {
+  const order = await Order.findById(req.params.id);
+  if (!order) throw ApiError.notFound('Order not found');
+  if (!isSameRestaurant(req.user, order.restaurant)) throw ApiError.forbidden();
+
+  const updated = await Order.findOneAndUpdate(
+    { _id: order._id, waiter: { $in: [null, undefined] } },
+    { $set: { waiter: req.user._id } },
+    { new: true }
+  ).populate(POPULATE);
+
+  if (!updated) {
+    const fresh = await Order.findById(order._id).populate('waiter', 'name');
+    throw ApiError.conflict(`Already claimed by ${fresh?.waiter?.name || 'another waiter'}`);
+  }
+
+  emitOrderEventToRooms(getIO(), updated, 'order_updated');
+  return ok(res, { order: updated }, 'Order claimed');
 });
 
 // @desc   Update a single item's KDS status (cook begins/finishes a dish)
@@ -367,6 +542,27 @@ exports.updateOrderItemStatus = asyncHandler(async (req, res) => {
     throw ApiError.badRequest(`Cannot change item status from '${item.status}' to '${status}'`);
   }
 
+  // KDS claim-on-start (Problem 2): the first cook to touch a ticket owns it, so
+  // two cooks on separate KDS screens can never prepare the same order. Atomic —
+  // the claim only succeeds if the ticket is unclaimed or already this cook's.
+  if (req.user.role === 'cook') {
+    const claimed = await Order.findOneAndUpdate(
+      {
+        _id: order._id,
+        $or: [{ preparedBy: { $in: [null, undefined] } }, { preparedBy: req.user._id }],
+      },
+      { $set: { preparedBy: req.user._id, preparedByName: req.user.name } },
+      { new: true }
+    );
+    if (!claimed) {
+      throw ApiError.conflict(
+        `Ticket is being prepared by ${order.preparedByName || 'another cook'}`
+      );
+    }
+    order.preparedBy = claimed.preparedBy;
+    order.preparedByName = claimed.preparedByName;
+  }
+
   item.status = status;
   // Roll the change up to the order-level status (unless cancelled/served).
   if (order.status !== 'cancelled') {
@@ -384,7 +580,7 @@ exports.updateOrderItemStatus = asyncHandler(async (req, res) => {
   emitOrderEventToRooms(io, order, 'kds_updated');
   emitOrderEventToRooms(io, order, 'order_updated');
 
-  // When the whole order becomes ready, notify the assigned waiter by table.
+  // When the whole order becomes ready, notify the responsible waiter.
   if (order.status === 'ready') {
     emitOrderEventToRooms(io, order, 'order_ready');
     if (order.waiter) {
@@ -395,6 +591,7 @@ exports.updateOrderItemStatus = asyncHandler(async (req, res) => {
         message: 'Order is ready to serve',
       });
     }
+    notifyOrderReady(order);
   }
 
   return ok(res, { order }, 'Item status updated');

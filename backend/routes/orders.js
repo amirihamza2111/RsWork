@@ -11,8 +11,12 @@ const {
   updateOrderItemStatus,
   getTableOrders,
   getKdsOrders,
+  getIncomingOrders,
+  confirmOrder,
+  claimOrder,
   getActiveByTable,
   cancelOrder,
+  requestBill,
 } = require('../controllers/orderController');
 
 router.post('/', optionalAuth, createOrderValidator, validate, createOrder);
@@ -25,7 +29,13 @@ router.get(
 );
 
 // Static routes must be declared before the dynamic '/:id' route.
-router.get('/kds', protect, authorize('cook', 'manager', 'superadmin'), getKdsOrders);
+router.get('/kds', protect, authorize('cook', 'waiter', 'manager', 'superadmin'), getKdsOrders);
+router.get(
+  '/incoming',
+  protect,
+  authorize('cook', 'waiter', 'manager', 'superadmin'),
+  getIncomingOrders
+);
 router.get('/active', protect, authorize('cashier', 'manager', 'superadmin'), getActiveByTable);
 router.get(
   '/table/:tableId',
@@ -35,7 +45,15 @@ router.get(
 );
 
 router.get('/:id', optionalAuth, getOrderById);
+router.post('/:id/request-bill', optionalAuth, requestBill);
 
+router.put(
+  '/:id/confirm',
+  protect,
+  authorize('manager', 'superadmin', 'waiter', 'cook'),
+  confirmOrder
+);
+router.put('/:id/claim', protect, authorize('manager', 'superadmin', 'waiter'), claimOrder);
 router.put(
   '/:id/status',
   protect,

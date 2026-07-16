@@ -35,8 +35,9 @@ router.post('/change-password', protect, changePassword);
 router.post('/forgot-password', authLimiter, forgotPassword);
 router.post('/reset-password', authLimiter, resetPassword);
 
-router.get('/verify-email', verifyEmail);
-router.post('/verify-email', verifyEmail);
+// 6-digit OTPs need brute-force protection.
+router.get('/verify-email', authLimiter, verifyEmail);
+router.post('/verify-email', authLimiter, verifyEmail);
 router.post('/resend-verification', authLimiter, resendVerification);
 
 module.exports = router;

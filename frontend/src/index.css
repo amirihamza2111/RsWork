@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light — white background with #c4d7e4 (soft powder-blue) as the theme accent */
+    --background: 0 0% 100%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --primary: 204 45% 40%; /* deeper blue for buttons/active (legible white text) */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 204 37% 83%; /* #c4d7e4 soft accent surfaces */
+    --secondary-foreground: 210 40% 22%;
+
+    --accent: 204 40% 92%; /* light tint for hovers */
+    --accent-foreground: 210 40% 22%;
+
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+
+    --border: 214 32% 88%;
+    --input: 214 32% 88%;
+    --ring: 204 45% 40%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 152 55% 38%;
+    --success-foreground: 0 0% 100%;
+
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    /* Dark — navy charcoal with #c4d7e4 popping as the accent */
+    --background: 210 30% 9%;
+    --foreground: 210 20% 92%;
+    --card: 210 25% 13%;
+    --card-foreground: 210 20% 92%;
+
+    --primary: 204 37% 75%; /* light powder-blue on dark; dark text */
+    --primary-foreground: 210 40% 12%;
+
+    --secondary: 210 22% 20%;
+    --secondary-foreground: 204 37% 83%;
+
+    --accent: 210 22% 22%;
+    --accent-foreground: 204 37% 83%;
+
+    --muted: 210 24% 16%;
+    --muted-foreground: 214 18% 65%;
+
+    --border: 210 20% 22%;
+    --input: 210 20% 22%;
+    --ring: 204 37% 75%;
+
+    --destructive: 0 62% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 152 45% 45%;
+    --success-foreground: 0 0% 100%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter Variable', 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}

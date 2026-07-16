@@ -19,6 +19,19 @@ const tableSchema = new mongoose.Schema(
       enum: ['available', 'occupied', 'reserved'],
       default: 'available',
     },
+    // Section assignment: the waiter responsible for this table. Orders placed
+    // here are routed to this waiter (targeted "ready" notification, no spam).
+    assignedWaiter: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+    // Dining session: opened when a diner scans the QR, required on public
+    // orders, and cleared when the table is released. A leaked/photographed QR
+    // from a previous diner can't order once the session is cleared.
+    session: {
+      id: { type: String },
+      expiresAt: { type: Date },
+    },
     qrCode: {
       type: String,
     },

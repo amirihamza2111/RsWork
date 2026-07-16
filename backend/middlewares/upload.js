@@ -28,7 +28,12 @@ const uploadImage = (req, res, next) => {
     const stream = cloudinary.uploader.upload_stream(
       {
         folder: 'restaurant-app',
-        resource_type: 'auto',
+        resource_type: 'image',
+        // Incoming optimization: cap oversized phone photos to 1600px on the
+        // long edge and let Cloudinary pick a good quality. This shrinks stored
+        // files a lot while keeping a clean secure_url (no transform string in
+        // the path), so the delete-by-public-id logic keeps working.
+        transformation: [{ width: 1600, height: 1600, crop: 'limit', quality: 'auto:good' }],
       },
       (error, result) => {
         if (error) {

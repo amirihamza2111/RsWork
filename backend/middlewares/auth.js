@@ -1,8 +1,31 @@
 const jwt = require('jsonwebtoken');
+const mongoose = require('mongoose');
 const User = require('../models/User');
+const Restaurant = require('../models/Restaurant');
 const config = require('../config');
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
+
+// Multi-restaurant switch: an owner with several restaurants (or a superadmin)
+// sends X-Restaurant-Id to pick which restaurant the request is scoped to.
+// Every downstream controller reads req.user.restaurant, so overriding it here
+// scopes the whole API (menu CRUD, tables, orders, reports…) to the selection.
+const applyRestaurantSwitch = async (req, user) => {
+  const selected = req.headers['x-restaurant-id'];
+  if (!selected || !user) return;
+  if (!mongoose.isValidObjectId(selected)) return;
+  if (String(user.restaurant || '') === String(selected)) return;
+
+  if (user.role === 'superadmin') {
+    user.restaurant = selected;
+    return;
+  }
+  if (user.role === 'manager') {
+    // A manager may only switch to a restaurant they own.
+    const owned = await Restaurant.exists({ _id: selected, owner: user._id });
+    if (owned) user.restaurant = selected;
+  }
+};
 
 exports.protect = asyncHandler(async (req, res, next) => {
   let token;
@@ -32,6 +55,8 @@ exports.protect = asyncHandler(async (req, res, next) => {
       throw ApiError.unauthorized('Session expired, please log in again');
     }
   }
+
+  await applyRestaurantSwitch(req, user);
 
   req.user = user;
   next();

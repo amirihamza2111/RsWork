@@ -90,12 +90,15 @@ userSchema.statics.hashResetToken = function (rawToken) {
   return crypto.createHash('sha256').update(String(rawToken)).digest('hex');
 };
 
-// Email verification token: stores its SHA-256 hash (+24h expiry), returns raw.
+// Email verification code: 6-digit OTP (100000-999999). We store its SHA-256
+// hash so the DB never carries the code, and keep it valid for 15 minutes.
 userSchema.methods.createEmailVerificationToken = function () {
-  const rawToken = crypto.randomBytes(32).toString('hex');
-  this.emailVerificationToken = crypto.createHash('sha256').update(rawToken).digest('hex');
-  this.emailVerificationExpires = Date.now() + 24 * 60 * 60 * 1000;
-  return rawToken;
+  // crypto.randomInt is uniformly distributed — avoids the modulo bias of
+  // parseInt(randomBytes, 16) % 1_000_000.
+  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+  this.emailVerificationToken = crypto.createHash('sha256').update(code).digest('hex');
+  this.emailVerificationExpires = Date.now() + 15 * 60 * 1000;
+  return code;
 };
 
 userSchema.index({ restaurant: 1, role: 1 });

@@ -6,6 +6,7 @@ const ApiError = require('../utils/ApiError');
 const { ok, created } = require('../utils/apiResponse');
 const { getRestaurantScope } = require('../utils/scope');
 const { sanitizeText } = require('../utils/sanitizeText');
+const { parsePagination, meta } = require('../utils/pagination');
 
 // @desc   List feedbacks (scoped to the manager's restaurant)
 // @route  GET /api/feedbacks
@@ -13,13 +14,23 @@ const { sanitizeText } = require('../utils/sanitizeText');
 exports.getFeedbacks = asyncHandler(async (req, res) => {
   const scope = getRestaurantScope(req.user);
   const filter = scope ? { restaurant: scope } : {};
+  if (req.query.status === 'new' || req.query.status === 'reviewed') {
+    filter.status = req.query.status;
+  }
 
-  const feedbacks = await Feedback.find(filter)
-    .populate('table', 'number')
-    .populate('order', '_id')
-    .sort({ createdAt: -1 });
+  const { page, limit, skip } = parsePagination(req.query);
+  const [feedbacks, total] = await Promise.all([
+    Feedback.find(filter)
+      .populate('table', 'number')
+      .populate('order', 'orderNumber')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    Feedback.countDocuments(filter),
+  ]);
 
-  return ok(res, { count: feedbacks.length, feedbacks });
+  return ok(res, { count: feedbacks.length, feedbacks, ...meta(total, page, limit) });
 });
 
 // @desc   Create feedback (public — left by a diner)
