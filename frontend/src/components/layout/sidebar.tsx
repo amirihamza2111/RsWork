@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils'
 
 const nav = [
   { to: '/', key: 'nav.dashboard', icon: LayoutDashboard, end: true },
-  { to: '/menu', key: 'nav.menu', icon: UtensilsCrossed },
+  { to: '/menu-management', key: 'nav.menu', icon: UtensilsCrossed },
   { to: '/tables', key: 'nav.tables', icon: Grid3x3 },
   { to: '/staff', key: 'nav.staff', icon: Users },
   { to: '/payments', key: 'nav.payments', icon: CreditCard },

@@ -38,7 +38,7 @@ exports.exportAiReportPdf = asyncHandler(async (req, res) => {
     `attachment; filename=bi-report-${analytics.period.start}_${analytics.period.end}.pdf`
   );
 
-  const doc = new PDFDocument({ size: 'A4', margin: 50 });
+  const doc = new PDFDocument({ size: 'A4', margin: 50, bufferPages: true });
   doc.pipe(res);
   renderAiReport(doc, { analytics, narrative, modelLabel: `${aiClient.provider()}:${aiClient.model()}` });
   doc.end();

@@ -8,9 +8,10 @@ const oid = (value) =>
 
 const DAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-// Revenue counts non-cancelled orders only.
+// Revenue = money actually collected: only PAID orders count, matching the
+// Payments page. Unpaid/pending tabs and cancelled orders don't inflate it.
 const revenueExpr = {
-  $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 0, { $ifNull: ['$totalAmount', 0] }] },
+  $sum: { $cond: [{ $eq: ['$paymentStatus', 'paid'] }, { $ifNull: ['$totalAmount', 0] }, 0] },
 };
 
 function resolveRange(startDate, endDate) {
@@ -87,7 +88,13 @@ async function gather(restaurantId, { startDate, endDate } = {}) {
         { $project: { _id: 0, date: '$_id', orders: 1, revenue: 1 } },
       ]),
       Order.aggregate([
-        { $match: { restaurant: oid(restaurantId), createdAt: { $gte: start, $lte: end } } },
+        {
+          $match: {
+            restaurant: oid(restaurantId),
+            createdAt: { $gte: start, $lte: end },
+            status: { $ne: 'cancelled' },
+          },
+        },
         { $unwind: '$items' },
         {
           $group: {

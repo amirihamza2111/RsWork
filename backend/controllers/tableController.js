@@ -10,13 +10,24 @@ const { toId, isSameRestaurant } = require('../utils/scope');
 const { autoAssignSections } = require('../services/sectionService');
 const { isSessionActive } = require('../utils/tableSession');
 
-const DEFAULT_FRONTEND_URL = 'https://layalicarthage.netlify.app';
+// Dev-only fallback. In production CLIENT_URL MUST be set (Render env) so table
+// QR codes point at the live diner app; a wrong base URL sends scans nowhere.
+const DEFAULT_FRONTEND_URL = 'http://localhost:5173';
 const ACTIVE_ORDER_STATUSES = ['pending', 'confirmed', 'preparing', 'ready'];
 
+let warnedMissingClientUrl = false;
 const getClientBaseUrl = () => {
-  const configured = String(
-    config.clientUrl || process.env.FRONTEND_PUBLIC_URL || DEFAULT_FRONTEND_URL
-  ).trim();
+  const configured = String(config.clientUrl || process.env.FRONTEND_PUBLIC_URL || '').trim();
+  if (!configured) {
+    if (config.isProd && !warnedMissingClientUrl) {
+      warnedMissingClientUrl = true;
+      console.warn(
+        `⚠️  CLIENT_URL is not set — table QR codes will point at ${DEFAULT_FRONTEND_URL}. ` +
+          'Set CLIENT_URL to your live frontend URL, then regenerate QR codes (Tables → Regenerate QR).'
+      );
+    }
+    return DEFAULT_FRONTEND_URL;
+  }
   return configured.replace(/\/+$/, '');
 };
 

@@ -32,11 +32,14 @@ const parseDateQuery = (dateStr) => {
   if (parts.length !== 3 || parts.some(Number.isNaN)) return new Date();
   return new Date(parts[0], parts[1] - 1, parts[2]);
 };
+// Revenue = money actually collected: only PAID orders count. This keeps the
+// dashboard consistent with the Payments page and stops unpaid/pending tabs (or
+// cancelled orders) from inflating the figure.
 const revenueSumExpr = {
   $cond: [
-    { $eq: ['$status', 'cancelled'] },
-    0,
+    { $eq: ['$paymentStatus', 'paid'] },
     { $ifNull: ['$totalAmount', 0] },
+    0,
   ],
 };
 const fillDateRangeUTC = (startUTC, numDays, grouped) => {
@@ -240,7 +243,7 @@ exports.getMonthlyReport = asyncHandler(async (req, res) => {
 exports.getTopItems = asyncHandler(async (req, res) => {
     const restaurantId = requireRestaurant(req);
     const topItems = await Order.aggregate([
-      { $match: { restaurant: restaurantId } },
+      { $match: { restaurant: restaurantId, status: { $ne: 'cancelled' } } },
       { $unwind: '$items' },
       {
         $group: {

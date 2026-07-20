@@ -138,7 +138,9 @@ export default function App() {
           }
         >
           <Route index element={<DashboardOverview />} />
-          <Route path="menu" element={<MenuPage />} />
+          {/* Menu management lives at /menu-management so the public diner menu
+              can keep the clean /menu path used by table QR codes. */}
+          <Route path="menu-management" element={<MenuPage />} />
           <Route path="tables" element={<TablesPage />} />
           <Route path="staff" element={<StaffPage />} />
           <Route path="payments" element={<PaymentsPage />} />
