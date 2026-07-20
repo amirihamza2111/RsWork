@@ -6,7 +6,7 @@ Production stack:
   Diners' phones / staff devices
             │  HTTPS
             ▼
-   Vercel  ──────────►  frontend (Vite SPA, PWA)
+   Netlify ──────────►  frontend (Vite SPA, PWA)
             │  XHR + WebSocket (CORS-allowlisted)
             ▼
    Render  ──────────►  rswork-api   (Node/Express + Socket.IO)  ──►  MongoDB Atlas
@@ -19,14 +19,14 @@ Templates: `backend/.env.production.example`, `frontend/.env.production.example`
 ---
 
 ## 0. Accounts you need (all have free tiers)
-MongoDB Atlas · Render · Vercel · Stripe · Cloudinary · Resend · Groq · Sentry (optional).
+MongoDB Atlas · Render · Netlify · Stripe · Cloudinary · Resend · Groq · Sentry (optional).
 
 ---
 
 ## 1. MongoDB Atlas
 1. Create a cluster (M0 works to launch; **M10** recommended for real traffic).
 2. **Database Access** → add a user (username + password).
-3. **Network Access** → allow `0.0.0.0/0` (Render/Vercel are dynamic-IP) or Render's egress IPs.
+3. **Network Access** → allow `0.0.0.0/0` (Render/Netlify are dynamic-IP) or Render's egress IPs.
 4. Copy the **SRV connection string**; append the DB name, e.g. `.../rswork?retryWrites=true&w=majority`. This is `DB_URI`.
 5. Seed once (from your machine, pointing at the prod DB): `cd backend && DB_URI="<prod>" npm run seed && DB_URI="<prod>" npm run seed:menu`.
 
@@ -36,18 +36,18 @@ MongoDB Atlas · Render · Vercel · Stripe · Cloudinary · Resend · Groq · S
 3. On **rswork-api**, open **Environment** and paste the `sync:false` secrets from `backend/.env.production.example` (`DB_URI`, Stripe, Cloudinary, Resend, Groq, VAPID, Sentry). Leave `CLIENT_URL`/`CORS_ORIGINS` for step 4.
 4. Deploy. Health check: `https://rswork-api.onrender.com/health` → `{"success":true}`.
 
-## 3. Vercel (frontend)
-1. Vercel → **Add New → Project** → import the repo.
-2. **Root Directory = `frontend`** (important — it's a monorepo). Framework auto-detects Vite.
-3. **Environment Variables** (from `frontend/.env.production.example`):
+## 3. Netlify (frontend)
+1. Netlify → **Add new site → Import an existing project** → GitHub → pick the repo.
+2. Build settings come from the repo-root **`netlify.toml`** (base `frontend`, command `npm run build`, publish `frontend/dist`, SPA redirects) — don't override them in the UI.
+3. **Environment variables** (Site configuration → Environment variables — set them BEFORE the first deploy; Vite inlines them at build time):
    - `VITE_API_URL` = your Render API URL (`https://rswork-api.onrender.com`)
    - `VITE_VAPID_PUBLIC_KEY` = same value as backend `VAPID_PUBLIC_KEY`
    - `VITE_SENTRY_DSN` = frontend Sentry DSN (optional)
-4. Deploy → note the domain, e.g. `https<>://rswork.vercel.app` (or your custom domain).
+4. Deploy → note the domain, e.g. `https://rswork.netlify.app` (rename under Site configuration → Change site name, or attach a custom domain). Every push to `main` auto-deploys.
 
 ## 4. Wire the two together (then redeploy each)
-- **Render → rswork-api env:** set `CLIENT_URL` and `CORS_ORIGINS` to the Vercel domain, then redeploy.
-- **Vercel:** confirm `VITE_API_URL` points at Render; redeploy if you changed it.
+- **Render → rswork-api env:** set `CLIENT_URL` and `CORS_ORIGINS` to the Netlify domain, then redeploy.
+- **Netlify:** confirm `VITE_API_URL` points at Render; if you changed an env var, **Deploys → Trigger deploy → Clear cache and deploy site** (env changes need a rebuild).
 - **Regenerate QR codes:** log in as manager → **Tables → Regenerate QR** so every table QR points at the live `CLIENT_URL`.
 
 ## 5. Stripe (live card payments)
