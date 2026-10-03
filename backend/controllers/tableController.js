@@ -1,19 +1,18 @@
 const crypto = require('crypto');
-const Table = require('../models/Table');
-const Order = require('../models/Order');
 const QRCode = require('qrcode');
 const config = require('../config');
+const tables = require('../db/tables');
+const orders = require('../db/orders');
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const { ok } = require('../utils/apiResponse');
 const { toId, isSameRestaurant } = require('../utils/scope');
-const { autoAssignSections } = require('../services/sectionService');
+const { autoAssignSections, waiterHeartbeat, waiterLeft } = require('../services/sectionService');
 const { isSessionActive } = require('../utils/tableSession');
 
 // Dev-only fallback. In production CLIENT_URL MUST be set (Render env) so table
 // QR codes point at the live diner app; a wrong base URL sends scans nowhere.
 const DEFAULT_FRONTEND_URL = 'http://localhost:5173';
-const ACTIVE_ORDER_STATUSES = ['pending', 'confirmed', 'preparing', 'ready'];
 
 let warnedMissingClientUrl = false;
 const getClientBaseUrl = () => {
@@ -41,23 +40,22 @@ exports.createTable = asyncHandler(async (req, res) => {
   const restaurant = req.user.restaurant;
   const tableNumber = Number(number);
 
-  if (!number || !Number.isFinite(tableNumber) || tableNumber <= 0) {
+  if (!number || !Number.isInteger(tableNumber) || tableNumber <= 0) {
     throw ApiError.badRequest('Please provide a valid table number');
   }
   if (!restaurant) throw ApiError.forbidden('Restaurant context is required');
 
-  const existing = await Table.findOne({ restaurant, number: tableNumber });
-  if (existing) throw ApiError.badRequest('Table number already exists');
+  if (await tables.findByNumber(restaurant, tableNumber)) {
+    throw ApiError.badRequest('Table number already exists');
+  }
 
-  const table = await Table.create({
+  const table = await tables.create({
+    restaurantId: restaurant,
     number: tableNumber,
     capacity: Number(capacity) || 4,
-    restaurant,
   });
-
-  table.qrCode = await generateTableQRCode(table._id);
-  await table.save();
-  return ok(res, { table }, 'Table created', 201);
+  const withQr = await tables.update(table._id, { qrCode: await generateTableQRCode(table._id) });
+  return ok(res, { table: withQr }, 'Table created', 201);
 });
 
 exports.getTables = asyncHandler(async (req, res) => {
@@ -68,58 +66,48 @@ exports.getTables = asyncHandler(async (req, res) => {
     throw ApiError.forbidden('Restaurant context is required');
   }
 
-  let tableFilter = role === 'superadmin' ? {} : { restaurant: restaurantId };
-
+  let list;
   if (role === 'waiter') {
     // A waiter sees their section (auto-assigned tables) plus any table where
     // they already carry an order (claimed/legacy orders outside the section).
-    const tableIds = await Order.find({ restaurant: restaurantId, waiter: req.user._id }).distinct(
-      'table'
-    );
-    tableFilter = {
-      ...tableFilter,
-      $or: [{ assignedWaiter: req.user._id }, { _id: { $in: tableIds } }],
-    };
+    list = await tables.list({ waiterSection: { restaurantId, waiterId: req.user._id } });
+  } else if (role === 'client') {
+    const mine = await orders.list({ clientId: req.user._id }, { populate: false });
+    list = await tables.list({ ids: [...new Set(mine.map((o) => o.table).filter(Boolean))] });
+  } else if (role === 'superadmin') {
+    list = await tables.list();
+  } else {
+    list = await tables.list({ restaurantId });
   }
-
-  if (role === 'client') {
-    const tableIds = await Order.find({ client: req.user._id }).distinct('table');
-    tableFilter = { _id: { $in: tableIds } };
-  }
-
-  const tables = await Table.find(tableFilter)
-    .populate('restaurant')
-    .populate('assignedWaiter', 'name');
-  return ok(res, { count: tables.length, tables });
+  return ok(res, { count: list.length, tables: list });
 });
 
 exports.updateTable = asyncHandler(async (req, res) => {
   const { number, capacity, status, assignedWaiter } = req.body;
-  const table = await Table.findById(req.params.id);
+  const table = await tables.findById(req.params.id);
   if (!table) throw ApiError.notFound('Table not found');
   if (!isSameRestaurant(req.user, table.restaurant)) throw ApiError.forbidden();
 
-  if (number) table.number = number;
-  if (capacity) table.capacity = capacity;
-  if (status) table.status = status;
-  // Section assignment — '' / null clears it, an id sets the responsible waiter.
-  if (assignedWaiter !== undefined) {
-    table.assignedWaiter = assignedWaiter || undefined;
-  }
-  await table.save();
-  return ok(res, { table }, 'Table updated');
+  const updated = await tables.update(table._id, {
+    number: number ? Number(number) : undefined,
+    capacity: capacity ? Number(capacity) : undefined,
+    status: status || undefined,
+    // Section assignment — '' / null clears it, an id sets the responsible waiter.
+    assignedWaiter: assignedWaiter !== undefined ? assignedWaiter || null : undefined,
+  });
+  return ok(res, { table: updated }, 'Table updated');
 });
 
 exports.deleteTable = asyncHandler(async (req, res) => {
-  const table = await Table.findById(req.params.id);
+  const table = await tables.findById(req.params.id);
   if (!table) throw ApiError.notFound('Table not found');
   if (!isSameRestaurant(req.user, table.restaurant)) throw ApiError.forbidden();
 
-  await table.deleteOne();
+  await tables.remove(table._id);
   return ok(res, null, 'Table deleted successfully');
 });
 
-// @desc   Force a full section reshuffle across the connected waiters
+// @desc   Force a full section reshuffle across the online waiters
 // @route  POST /api/tables/auto-assign
 // @access manager / superadmin
 exports.autoAssignTables = asyncHandler(async (req, res) => {
@@ -138,6 +126,24 @@ exports.autoAssignTables = asyncHandler(async (req, res) => {
   return ok(res, result, `Sections reassigned across ${result.waiters} waiter(s)`);
 });
 
+// @desc   Waiter board heartbeat — marks the waiter as on the floor
+// @route  POST /api/tables/presence
+// @access waiter
+exports.presenceHeartbeat = asyncHandler(async (req, res) => {
+  const restaurantId = toId(req.user.restaurant);
+  if (!restaurantId) throw ApiError.forbidden('Restaurant context is required');
+  const result = await waiterHeartbeat(restaurantId, req.user._id);
+  return ok(res, result);
+});
+
+// @desc   Waiter board closed — leave the floor immediately
+// @route  DELETE /api/tables/presence
+// @access waiter
+exports.presenceLeave = asyncHandler(async (req, res) => {
+  await waiterLeft(req.user._id);
+  return ok(res, { left: true });
+});
+
 exports.regenerateAllQRCodes = asyncHandler(async (req, res) => {
   const role = req.user.role;
   const restaurantId = req.user.restaurant;
@@ -146,22 +152,17 @@ exports.regenerateAllQRCodes = asyncHandler(async (req, res) => {
     throw ApiError.forbidden('Restaurant context is required');
   }
 
-  const filter = role === 'superadmin' ? {} : { restaurant: restaurantId };
-  const tables = await Table.find(filter);
-
+  const ids = await tables.listIdsForRestaurant(role === 'superadmin' ? null : restaurantId);
   await Promise.all(
-    tables.map(async (table) => {
-      table.qrCode = await generateTableQRCode(table._id);
-      await table.save();
-    })
+    ids.map(async (id) => tables.update(id, { qrCode: await generateTableQRCode(id) }))
   );
 
-  return ok(res, { count: tables.length }, 'QR codes regenerated successfully');
+  return ok(res, { count: ids.length }, 'QR codes regenerated successfully');
 });
 
 exports.getTableByQR = asyncHandler(async (req, res) => {
   const tableId = req.params.id || req.params.tableId;
-  const table = await Table.findById(tableId).populate('restaurant');
+  const table = await tables.findById(tableId, { populate: true });
   if (!table) throw ApiError.notFound('Table not found');
   return ok(res, { table });
 });
@@ -176,17 +177,17 @@ const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 // @route  POST /api/tables/:id/session
 // @access Public
 exports.openTableSession = asyncHandler(async (req, res) => {
-  const table = await Table.findById(req.params.id).populate('restaurant');
+  let table = await tables.findById(req.params.id, { populate: true });
   if (!table) throw ApiError.notFound('Table not found');
 
   const now = Date.now();
   if (!isSessionActive(table.session, now)) {
-    table.session = {
-      id: crypto.randomUUID(),
-      expiresAt: new Date(now + SESSION_TTL_MS),
-    };
-    if (table.status === 'available') table.status = 'occupied';
-    await table.save();
+    const updated = await tables.update(table._id, {
+      sessionId: crypto.randomUUID(),
+      sessionExpiresAt: new Date(now + SESSION_TTL_MS),
+      status: table.status === 'available' ? 'occupied' : undefined,
+    });
+    table = { ...updated, restaurant: table.restaurant };
   }
 
   return ok(res, {
@@ -199,11 +200,11 @@ exports.releaseTableSession = asyncHandler(async (req, res) => {
   const tableId = req.params.id;
   const orderId = String(req.body?.orderId || '').trim();
 
-  const table = await Table.findById(tableId);
+  const table = await tables.findById(tableId);
   if (!table) throw ApiError.notFound('Table not found');
 
   if (orderId) {
-    const order = await Order.findById(orderId).select('table status');
+    const order = await orders.findById(orderId);
     if (!order || toId(order.table) !== toId(table._id)) {
       throw ApiError.badRequest('Order does not match the table');
     }
@@ -213,18 +214,16 @@ exports.releaseTableSession = asyncHandler(async (req, res) => {
     }
   }
 
-  const hasActiveOrders = await Order.exists({
-    table: table._id,
-    status: { $in: ACTIVE_ORDER_STATUSES },
-  });
-  if (hasActiveOrders) {
+  if (await orders.hasActiveForTable(table._id)) {
     throw ApiError.conflict('Table still has active orders');
   }
 
   // Clearing the session invalidates any leaked/old QR link for this table.
-  table.session = { id: undefined, expiresAt: undefined };
-  if (table.status === 'occupied') table.status = 'available';
-  await table.save();
+  const updated = await tables.update(table._id, {
+    sessionId: null,
+    sessionExpiresAt: null,
+    status: table.status === 'occupied' ? 'available' : undefined,
+  });
 
-  return ok(res, { table }, 'Table released successfully');
+  return ok(res, { table: updated }, 'Table released successfully');
 });

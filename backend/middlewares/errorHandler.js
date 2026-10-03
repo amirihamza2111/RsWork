@@ -1,40 +1,26 @@
 const config = require('../config');
 
-// Central error handler. Translates thrown errors (ApiError, Mongoose errors,
+// Postgres SQLSTATE codes surfaced as client errors instead of 500s.
+const PG_ERRORS = {
+  '22P02': [400, 'Invalid identifier or value'],
+  '22003': [400, 'Numeric value out of range'],
+  '23502': [400, 'A required field is missing'],
+  '23503': [400, 'Referenced record does not exist'],
+  '23505': [409, 'Duplicate value'],
+  '23514': [400, 'Value failed validation'],
+};
+
+// Central error handler. Translates thrown errors (ApiError, Postgres errors,
 // or anything else) into a consistent JSON response.
 const errorHandler = (err, req, res, next) => {
   let status = err.status || err.statusCode || 500;
   let message = err.message || 'Internal Server Error';
 
-  // Mongoose: bad ObjectId
-  if (err.name === 'CastError') {
-    status = 400;
-    message = `Invalid ${err.path}: ${err.value}`;
-  }
-
-  // Mongoose: schema validation
-  if (err.name === 'ValidationError') {
-    status = 400;
-    message = Object.values(err.errors)
-      .map((e) => e.message)
-      .join(', ');
-  }
-
-  // MongoDB: duplicate key
-  if (err.code === 11000) {
-    status = 409;
-    const field = Object.keys(err.keyValue || {})[0] || 'field';
-    message = `Duplicate value for ${field}`;
-  }
-
-  // JWT
-  if (err.name === 'JsonWebTokenError') {
-    status = 401;
-    message = 'Invalid token';
-  }
-  if (err.name === 'TokenExpiredError') {
-    status = 401;
-    message = 'Token expired';
+  if (err.name === 'PostgresError' && PG_ERRORS[err.code]) {
+    [status, message] = PG_ERRORS[err.code];
+    if (err.code === '23505' && err.constraint_name) {
+      message = `Duplicate value (${err.constraint_name})`;
+    }
   }
 
   if (status >= 500 && !config.isProd) {

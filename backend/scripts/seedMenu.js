@@ -9,11 +9,7 @@
  *
  * Usage:  npm run seed:menu
  */
-const mongoose = require('mongoose');
-const config = require('../config');
-const Restaurant = require('../models/Restaurant');
-const Category = require('../models/Category');
-const MenuItem = require('../models/MenuItem');
+const { sql } = require('../config/db');
 
 const RESTAURANT_NAME = 'RsWork Demo';
 
@@ -78,34 +74,43 @@ const MENU = [
   },
 ];
 
-async function ensureCategory(restaurant, name, order) {
-  const existing = await Category.findOne({ restaurant, 'name.fr': name.fr });
-  if (existing) return { doc: existing, created: false };
-  const doc = await Category.create({ restaurant, name, order });
-  return { doc, created: true };
+async function ensureCategory(restaurantId, name, order) {
+  const [existing] = await sql`
+    select id from categories where restaurant_id = ${restaurantId} and name ->> 'fr' = ${name.fr}
+  `;
+  if (existing) return { id: existing.id, created: false };
+  const [row] = await sql`
+    insert into categories (restaurant_id, name, sort_order)
+    values (${restaurantId}, ${sql.json(name)}, ${order})
+    returning id
+  `;
+  return { id: row.id, created: true };
 }
 
-async function ensureMenuItem(restaurant, category, data) {
-  const existing = await MenuItem.findOne({ restaurant, 'name.fr': data.fr });
+async function ensureMenuItem(restaurantId, categoryId, data) {
+  const [existing] = await sql`
+    select id from menu_items where restaurant_id = ${restaurantId} and name ->> 'fr' = ${data.fr}
+  `;
   if (existing) return false;
-  await MenuItem.create({
-    restaurant,
-    category,
-    name: { fr: data.fr, en: data.en, ar: data.ar },
-    price: data.price,
-    image: optimize(data.image),
-    prepStation: data.station,
-  });
+  await sql`
+    insert into menu_items (restaurant_id, category_id, name, price, image, prep_station)
+    values (
+      ${restaurantId},
+      ${categoryId},
+      ${sql.json({ fr: data.fr, en: data.en, ar: data.ar })},
+      ${data.price},
+      ${optimize(data.image) || null},
+      ${data.station}
+    )
+  `;
   return true;
 }
 
 (async () => {
-  await mongoose.connect(config.dbUri, { serverSelectionTimeoutMS: 15000 });
-  console.log(`Connected to ${mongoose.connection.name}\n`);
-
-  const restaurant = await Restaurant.findOne({ name: RESTAURANT_NAME });
+  const [restaurant] = await sql`select id, name from restaurants where name = ${RESTAURANT_NAME}`;
   if (!restaurant) {
     console.error(`Restaurant "${RESTAURANT_NAME}" not found — run "npm run seed" first.`);
+    await sql.end();
     process.exit(1);
   }
 
@@ -115,11 +120,11 @@ async function ensureMenuItem(restaurant, category, data) {
 
   for (let i = 0; i < MENU.length; i += 1) {
     const group = MENU[i];
-    const { doc: category, created } = await ensureCategory(restaurant._id, group.category, i + 1);
-    if (created) catCreated += 1;
+    const category = await ensureCategory(restaurant.id, group.category, i + 1);
+    if (category.created) catCreated += 1;
 
     for (const item of group.items) {
-      const added = await ensureMenuItem(restaurant._id, category._id, {
+      const added = await ensureMenuItem(restaurant.id, category.id, {
         ...item,
         station: group.station,
       });
@@ -130,14 +135,15 @@ async function ensureMenuItem(restaurant, category, data) {
   }
 
   console.log('\n=== Menu import complete ===');
-  console.log(`Restaurant     : ${restaurant.name} (${restaurant._id})`);
+  console.log(`Restaurant     : ${restaurant.name} (${restaurant.id})`);
   console.log(`Categories new : ${catCreated}`);
   console.log(`Items created  : ${itemCreated}`);
   console.log(`Items skipped  : ${itemSkipped} (already existed)`);
 
-  await mongoose.disconnect();
+  await sql.end();
   process.exit(0);
-})().catch((err) => {
+})().catch(async (err) => {
   console.error('Menu import failed:', err.message);
+  await sql.end().catch(() => {});
   process.exit(1);
 });

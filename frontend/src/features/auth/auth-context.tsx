@@ -1,17 +1,21 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
-import { api, clearToken, getToken, setToken } from '@/lib/api'
-import type { AuthUser, LoginResponse, RegisterRestaurantResponse } from './types'
+import type { AuthError } from '@supabase/supabase-js'
+import { api, clearRestaurantSelection, type ApiError } from '@/lib/api'
+import { supabase } from '@/lib/supabase'
+import type { AuthUser, RegisterRestaurantResponse } from './types'
 
 interface AuthState {
   user: AuthUser | null
   loading: boolean
+  // Email awaiting OTP verification (set after registration or an unconfirmed login).
+  pendingEmail: string | null
   login: (email: string, password: string) => Promise<AuthUser>
   registerRestaurant: (payload: RegisterRestaurantPayload) => Promise<RegisterRestaurantResponse>
   verifyEmail: (code: string) => Promise<void>
-  resendVerification: (email: string) => Promise<{ verifyToken?: string }>
+  resendVerification: (email: string) => Promise<{ verifyToken?: string } | null>
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>
-  logout: () => void
-  refresh: () => Promise<void>
+  logout: () => Promise<void>
+  refresh: () => Promise<AuthUser | null>
 }
 
 interface RegisterRestaurantPayload {
@@ -24,25 +28,57 @@ interface RegisterRestaurantPayload {
   language?: string
 }
 
+const PENDING_EMAIL_KEY = 'rswork_pending_email'
+
+export const EMAIL_NOT_CONFIRMED = 'email_not_confirmed'
+
+const toApiError = (error: AuthError, fallback?: string): ApiError & { code?: string } => ({
+  status: error.status ?? 400,
+  message: fallback ?? error.message,
+  code: error.code,
+})
+
+const readPendingEmail = () => {
+  try {
+    return sessionStorage.getItem(PENDING_EMAIL_KEY)
+  } catch {
+    return null
+  }
+}
+
 const AuthContext = createContext<AuthState | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
-  const [loading, setLoading] = useState(Boolean(getToken()))
+  const [loading, setLoading] = useState(true)
+  const [pendingEmail, setPendingEmailState] = useState<string | null>(readPendingEmail)
 
-  // If a stored token exists on load, fetch the current user to hydrate state.
-  const refresh = useCallback(async () => {
-    if (!getToken()) {
-      setUser(null)
-      setLoading(false)
-      return
-    }
+  const setPendingEmail = useCallback((email: string | null) => {
     try {
+      if (email) sessionStorage.setItem(PENDING_EMAIL_KEY, email)
+      else sessionStorage.removeItem(PENDING_EMAIL_KEY)
+    } catch {
+      // Storage unavailable (private mode) — the in-memory value still works.
+    }
+    setPendingEmailState(email)
+  }, [])
+
+  // Loads the app profile for the current Supabase session (if any).
+  const refresh = useCallback(async () => {
+    try {
+      const { data } = await supabase.auth.getSession()
+      if (!data.session) {
+        setUser(null)
+        return null
+      }
       const { user } = await api.get<{ user: AuthUser }>('/api/auth/me')
       setUser(user)
+      return user
     } catch {
-      clearToken()
+      // Session exists but the profile is missing/deactivated — sign out cleanly.
+      await supabase.auth.signOut()
       setUser(null)
+      return null
     } finally {
       setLoading(false)
     }
@@ -50,49 +86,72 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void refresh()
+    // Don't call Supabase from inside this callback (it can deadlock the auth
+    // lock); only mirror sign-outs, e.g. from another tab or an expired refresh.
+    const { data } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') setUser(null)
+    })
+    return () => data.subscription.unsubscribe()
   }, [refresh])
 
-  const login = useCallback(async (email: string, password: string) => {
-    const data = await api.post<LoginResponse>('/api/auth/login', { email, password })
-    setToken(data.token)
-    setUser(data.user)
-    return data.user
-  }, [])
+  const login = useCallback(
+    async (email: string, password: string) => {
+      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) {
+        if (error.code === EMAIL_NOT_CONFIRMED) {
+          setPendingEmail(email)
+          throw toApiError(error, 'Please verify your email first — we sent you a new code.')
+        }
+        throw toApiError(error, 'Invalid credentials')
+      }
+      const profile = await refresh()
+      if (!profile) throw { status: 401, message: 'Account is not available' } satisfies ApiError
+      return profile
+    },
+    [refresh, setPendingEmail]
+  )
 
-  const registerRestaurant = useCallback(async (payload: RegisterRestaurantPayload) => {
-    const data = await api.post<RegisterRestaurantResponse>(
-      '/api/auth/register-restaurant',
-      payload
-    )
-    setToken(data.token)
-    setUser(data.user)
-    return data
-  }, [])
+  const registerRestaurant = useCallback(
+    async (payload: RegisterRestaurantPayload) => {
+      const data = await api.post<RegisterRestaurantResponse>('/api/auth/register-restaurant', payload)
+      setPendingEmail(payload.email.trim().toLowerCase())
+      return data
+    },
+    [setPendingEmail]
+  )
 
   const verifyEmail = useCallback(
     async (code: string) => {
-      await api.post('/api/auth/verify-email', { token: code })
+      const email = pendingEmail ?? user?.email
+      if (!email) throw { status: 400, message: 'Sign in again to verify your email.' } satisfies ApiError
+      const { error } = await supabase.auth.verifyOtp({ email, token: code, type: 'email' })
+      if (error) throw toApiError(error, 'Invalid or expired code')
+      setPendingEmail(null)
       await refresh()
     },
-    [refresh]
+    [pendingEmail, user, refresh, setPendingEmail]
   )
 
   const resendVerification = useCallback(async (email: string) => {
-    return api.post<{ verifyToken?: string }>('/api/auth/resend-verification', { email })
+    return api.post<{ verifyToken?: string } | null>('/api/auth/resend-verification', { email })
   }, [])
 
-  const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
-    const data = await api.post<{ token?: string }>('/api/auth/change-password', {
-      currentPassword,
-      newPassword,
-    })
-    // Backend returns a fresh token so this session stays valid.
-    if (data?.token) setToken(data.token)
-  }, [])
+  const changePassword = useCallback(
+    async (currentPassword: string, newPassword: string) => {
+      if (!user?.email) throw { status: 401, message: 'Not signed in' } satisfies ApiError
+      // Re-check the current password before allowing the change.
+      const check = await supabase.auth.signInWithPassword({ email: user.email, password: currentPassword })
+      if (check.error) throw toApiError(check.error, 'Current password is incorrect')
+      const { error } = await supabase.auth.updateUser({ password: newPassword })
+      if (error) throw toApiError(error)
+    },
+    [user]
+  )
 
-  const logout = useCallback(() => {
-    clearToken()
+  const logout = useCallback(async () => {
+    clearRestaurantSelection()
     setUser(null)
+    await supabase.auth.signOut()
   }, [])
 
   return (
@@ -100,6 +159,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       value={{
         user,
         loading,
+        pendingEmail,
         login,
         registerRestaurant,
         verifyEmail,

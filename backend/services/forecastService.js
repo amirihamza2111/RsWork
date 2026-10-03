@@ -1,12 +1,8 @@
-const mongoose = require('mongoose');
-const Order = require('../models/Order');
 const config = require('../config');
+const reports = require('../db/reports');
 
 const DEFAULT_HISTORY_DAYS = 90;
 const MAX_HORIZON = 31;
-
-const oid = (value) =>
-  value instanceof mongoose.Types.ObjectId ? value : new mongoose.Types.ObjectId(String(value));
 
 const ymd = (d) =>
   `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(
@@ -36,20 +32,7 @@ async function buildDailyHistory(restaurantId, days = DEFAULT_HISTORY_DAYS) {
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - (days - 1), 0, 0, 0, 0)
   );
 
-  const grouped = await Order.aggregate([
-    { $match: { restaurant: oid(restaurantId), createdAt: { $gte: start, $lte: end } } },
-    {
-      $group: {
-        _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-        orders: { $sum: 1 },
-        revenue: {
-          $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 0, { $ifNull: ['$totalAmount', 0] }] },
-        },
-      },
-    },
-    { $project: { _id: 0, date: '$_id', orders: 1, revenue: 1 } },
-  ]);
-
+  const grouped = await reports.dailySeries(String(restaurantId), start, end, { revenue: 'booked' });
   return fillDaily(grouped, start, days);
 }
 

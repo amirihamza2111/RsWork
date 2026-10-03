@@ -1,18 +1,8 @@
-const mongoose = require('mongoose');
-const Order = require('../models/Order');
-const Restaurant = require('../models/Restaurant');
+const reports = require('../db/reports');
+const restaurants = require('../db/restaurants');
 const forecastService = require('./forecastService');
 
-const oid = (value) =>
-  value instanceof mongoose.Types.ObjectId ? value : new mongoose.Types.ObjectId(String(value));
-
 const DAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
-// Revenue = money actually collected: only PAID orders count, matching the
-// Payments page. Unpaid/pending tabs and cancelled orders don't inflate it.
-const revenueExpr = {
-  $sum: { $cond: [{ $eq: ['$paymentStatus', 'paid'] }, { $ifNull: ['$totalAmount', 0] }, 0] },
-};
 
 function resolveRange(startDate, endDate) {
   const now = new Date();
@@ -35,18 +25,10 @@ function resolveRange(startDate, endDate) {
   return { start, end, days };
 }
 
+// Revenue = money actually collected: only PAID orders count, matching the
+// Payments page. Unpaid/pending tabs and cancelled orders don't inflate it.
 async function periodTotals(restaurantId, start, end) {
-  const [row] = await Order.aggregate([
-    { $match: { restaurant: oid(restaurantId), createdAt: { $gte: start, $lte: end } } },
-    {
-      $group: {
-        _id: null,
-        orders: { $sum: 1 },
-        revenue: revenueExpr,
-        cancelled: { $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] } },
-      },
-    },
-  ]);
+  const row = await reports.periodTotals(restaurantId, start, end);
   const orders = row?.orders || 0;
   const revenue = row?.revenue || 0;
   return {
@@ -70,79 +52,23 @@ async function gather(restaurantId, { startDate, endDate } = {}) {
   const prevStart = new Date(start);
   prevStart.setDate(prevStart.getDate() - days);
 
+  const rid = String(restaurantId);
   const [restaurant, totals, prevTotals, trend, topItems, byHour, byDay, forecast] =
     await Promise.all([
-      Restaurant.findById(restaurantId).select('name address phone settings').lean(),
-      periodTotals(restaurantId, start, end),
-      periodTotals(restaurantId, prevStart, prevEnd),
-      Order.aggregate([
-        { $match: { restaurant: oid(restaurantId), createdAt: { $gte: start, $lte: end } } },
-        {
-          $group: {
-            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-            orders: { $sum: 1 },
-            revenue: revenueExpr,
-          },
-        },
-        { $sort: { _id: 1 } },
-        { $project: { _id: 0, date: '$_id', orders: 1, revenue: 1 } },
-      ]),
-      Order.aggregate([
-        {
-          $match: {
-            restaurant: oid(restaurantId),
-            createdAt: { $gte: start, $lte: end },
-            status: { $ne: 'cancelled' },
-          },
-        },
-        { $unwind: '$items' },
-        {
-          $group: {
-            _id: '$items.menuItem',
-            quantity: { $sum: '$items.quantity' },
-            revenue: { $sum: { $multiply: ['$items.quantity', '$items.price'] } },
-          },
-        },
-        { $sort: { quantity: -1 } },
-        { $limit: 5 },
-        {
-          $lookup: {
-            from: require('../models/MenuItem').collection.name,
-            localField: '_id',
-            foreignField: '_id',
-            as: 'menuItem',
-          },
-        },
-        { $unwind: { path: '$menuItem', preserveNullAndEmptyArrays: true } },
-        {
-          $project: {
-            _id: 0,
-            name: { $ifNull: ['$menuItem.name.fr', 'Unknown item'] },
-            quantity: 1,
-            revenue: 1,
-          },
-        },
-      ]),
-      Order.aggregate([
-        { $match: { restaurant: oid(restaurantId), createdAt: { $gte: start, $lte: end } } },
-        { $group: { _id: { $hour: '$createdAt' }, orders: { $sum: 1 } } },
-        { $sort: { orders: -1 } },
-      ]),
-      Order.aggregate([
-        { $match: { restaurant: oid(restaurantId), createdAt: { $gte: start, $lte: end } } },
-        {
-          $group: {
-            _id: { $dayOfWeek: '$createdAt' },
-            orders: { $sum: 1 },
-            revenue: revenueExpr,
-          },
-        },
-      ]),
-      forecastService.getForecast(restaurantId, 7).catch(() => null),
+      restaurants.findById(rid),
+      periodTotals(rid, start, end),
+      periodTotals(rid, prevStart, prevEnd),
+      reports.dailySeries(rid, start, end),
+      reports
+        .topItems(rid, { start, end, limit: 5 })
+        .then((rows) => rows.map(({ name, quantity, revenue }) => ({ name, quantity, revenue }))),
+      reports.byHour(rid, { start, end }),
+      reports.byDayOfWeek(rid, { start, end }),
+      forecastService.getForecast(rid, 7).catch(() => null),
     ]);
 
   const peakDays = Array.from({ length: 7 }, (_, i) => {
-    const row = byDay.find((d) => d._id === i + 1);
+    const row = byDay.find((d) => d.day === i + 1);
     return {
       label: DAY_LABELS[i],
       orders: row?.orders || 0,
@@ -171,9 +97,9 @@ async function gather(restaurantId, { startDate, endDate } = {}) {
       ordersGrowthPct: growthPct(totals.orders, prevTotals.orders),
       revenueGrowthPct: growthPct(totals.revenue, prevTotals.revenue),
     },
-    trend,
+    trend: trend.map(({ date, orders, revenue }) => ({ date, orders, revenue })),
     topItems,
-    peakHours: byHour.slice(0, 3).map((h) => ({ hour: h._id, orders: h.orders })),
+    peakHours: byHour.slice(0, 3).map((h) => ({ hour: h.hour, orders: h.orders })),
     busiestDay,
     peakDays,
     forecast,

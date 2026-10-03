@@ -18,11 +18,8 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      # A strong secret generated once by Render and kept stable.
-      - key: JWT_SECRET
-        generateValue: true
-      - key: JWT_EXPIRES_IN
-        value: 7d
+      - key: SUPABASE_STORAGE_BUCKET
+        value: menu-images
       # Forecast service (internal). Optional — the API falls back if it's down.
       - key: ML_SERVICE_URL
         fromService:
@@ -30,7 +27,11 @@ services:
           name: rswork-ml
           property: hostport
       # --- Set these in the dashboard (never in git) ---
-      - key: DB_URI                 # MongoDB Atlas SRV connection string
+      - key: SUPABASE_URL           # https://<project-ref>.supabase.co
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_DB_URL        # transaction pooler connection string (port 6543)
         sync: false
       - key: CLIENT_URL             # https://<your-vercel-domain>  (used for QR links)
         sync: false
@@ -44,12 +45,6 @@ services:
         sync: false
       - key: STRIPE_CURRENCY
         value: usd
-      - key: CLOUDINARY_CLOUD_NAME
-        sync: false
-      - key: CLOUDINARY_API_KEY
-        sync: false
-      - key: CLOUDINARY_API_SECRET
-        sync: false
       - key: EMAIL_PROVIDER
         value: resend
       - key: RESEND_API_KEY

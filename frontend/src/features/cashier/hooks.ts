@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { getSocket } from '@/lib/socket'
+import { restaurantTopic, subscribe } from '@/lib/realtime'
 
 export interface CashierItem {
   _id: string
@@ -80,16 +80,9 @@ export function useCashierRealtime(restaurantId?: string) {
   const qc = useQueryClient()
   useEffect(() => {
     if (!restaurantId) return
-    const s = getSocket()
-    const join = () => s.emit('joinRestaurant', restaurantId)
-    join()
-    s.on('connect', join)
-    const refresh = () => qc.invalidateQueries({ queryKey: ['cashier', 'active'] })
-    CASHIER_EVENTS.forEach((e) => s.on(e, refresh))
-    return () => {
-      s.off('connect', join)
-      CASHIER_EVENTS.forEach((e) => s.off(e, refresh))
-    }
+    return subscribe(restaurantTopic(restaurantId), CASHIER_EVENTS, () =>
+      qc.invalidateQueries({ queryKey: ['cashier', 'active'] })
+    )
   }, [restaurantId, qc])
 }
 
@@ -106,18 +99,10 @@ export function useBillRequests(restaurantId?: string) {
   const [requests, setRequests] = useState<BillRequest[]>([])
   useEffect(() => {
     if (!restaurantId) return
-    const s = getSocket()
-    const join = () => s.emit('joinRestaurant', restaurantId)
-    join()
-    s.on('connect', join)
-    const onBill = (p: Omit<BillRequest, 'at'>) => {
+    return subscribe(restaurantTopic(restaurantId), ['bill_requested'], (_event, payload) => {
+      const p = payload as Omit<BillRequest, 'at'>
       setRequests((r) => [{ ...p, at: Date.now() }, ...r.filter((x) => x.orderId !== p.orderId)].slice(0, 5))
-    }
-    s.on('bill_requested', onBill)
-    return () => {
-      s.off('connect', join)
-      s.off('bill_requested', onBill)
-    }
+    })
   }, [restaurantId])
   const dismiss = (orderId: string) => setRequests((r) => r.filter((x) => x.orderId !== orderId))
   return { requests, dismiss }

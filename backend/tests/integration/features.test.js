@@ -8,6 +8,7 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
+const { signIn, verifyEmailOtp } = require('../helpers/supabaseAuth');
 
 const BASE = process.env.API_URL || 'http://localhost:5000';
 const PASSWORD = 'password123';
@@ -21,9 +22,7 @@ const j = async (p) => {
   const r = await p;
   return { status: r.status, body: await r.json().catch(() => ({})) };
 };
-const login = async (email) =>
-  (await j(fetch(`${BASE}/api/auth/login`, { method: 'POST', headers: H(), body: JSON.stringify({ email, password: PASSWORD }) })))
-    .body?.data?.token;
+const login = async (email) => (await signIn(email, PASSWORD)).token;
 
 let up = false;
 let mgr;
@@ -127,11 +126,13 @@ test('multi-restaurant: X-Restaurant-Id scopes data and enforces ownership', asy
   const meSwitched = await j(fetch(`${BASE}/api/restaurants/me`, { headers: H(mgr, other._id) }));
   assert.equal(meSwitched.body.data.restaurant._id, other._id, 'switch follows header');
   // A foreign manager must NOT be able to switch into our restaurant.
+  const intruderEmail = `intruder${Date.now()}@rswork-test.dev`;
   const reg = await j(fetch(`${BASE}/api/auth/register-restaurant`, {
     method: 'POST', headers: H(),
-    body: JSON.stringify({ restaurantName: `Intruder ${Date.now()}`, name: 'Intruder', email: `intruder${Date.now()}@test.com`, password: PASSWORD }),
+    body: JSON.stringify({ restaurantName: `Intruder ${Date.now()}`, name: 'Intruder', email: intruderEmail, password: PASSWORD }),
   }));
-  const stolen = await j(fetch(`${BASE}/api/restaurants/me`, { headers: H(reg.body.data.token, rid) }));
+  const { token: intruderToken } = await verifyEmailOtp(intruderEmail, reg.body.data.verifyToken);
+  const stolen = await j(fetch(`${BASE}/api/restaurants/me`, { headers: H(intruderToken, rid) }));
   assert.notEqual(stolen.body?.data?.restaurant?._id, rid, 'ownership enforced');
 });
 

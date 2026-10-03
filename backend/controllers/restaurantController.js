@@ -1,4 +1,4 @@
-const Restaurant = require('../models/Restaurant');
+const restaurants = require('../db/restaurants');
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const { ok, created } = require('../utils/apiResponse');
@@ -8,14 +8,14 @@ exports.createRestaurant = asyncHandler(async (req, res) => {
   const { name, type, address, phone, logo, settings } = req.body;
   if (!name) throw ApiError.badRequest('Please provide restaurant name');
 
-  const restaurant = await Restaurant.create({
+  const restaurant = await restaurants.create({
     name,
     type,
     address,
     phone,
     logo,
     settings,
-    owner: req.user._id,
+    ownerId: req.user._id,
   });
 
   return created(res, { restaurant }, 'Restaurant created');
@@ -25,36 +25,22 @@ exports.createRestaurant = asyncHandler(async (req, res) => {
 //         Owners get all restaurants they own; staff get their scoped one.
 // @route  GET /api/restaurants/mine
 exports.getMyRestaurants = asyncHandler(async (req, res) => {
-  const filter =
-    req.user.role === 'superadmin'
-      ? {}
-      : {
-          $or: [
-            { owner: req.user._id },
-            ...(req.user.restaurant ? [{ _id: req.user.restaurant }] : []),
-          ],
-        };
-  const restaurants = await Restaurant.find(filter).select('name logo settings isActive').sort({ name: 1 });
-  return ok(res, { count: restaurants.length, restaurants });
+  const list = await restaurants.listForUser(req.user);
+  return ok(res, { count: list.length, restaurants: list });
 });
 
 exports.getMyRestaurant = asyncHandler(async (req, res) => {
   // Resolve via the user's restaurant ref first (works for any manager/staff),
   // falling back to ownership. Supports multi-manager restaurants.
-  let restaurant = null;
-  if (req.user.restaurant) {
-    restaurant = await Restaurant.findById(req.user.restaurant);
-  }
-  if (!restaurant) {
-    restaurant = await Restaurant.findOne({ owner: req.user._id });
-  }
+  let restaurant = req.user.restaurant ? await restaurants.findById(req.user.restaurant) : null;
+  if (!restaurant) restaurant = await restaurants.findFirstOwnedBy(req.user._id);
   if (!restaurant) throw ApiError.notFound('Restaurant not found');
   return ok(res, { restaurant });
 });
 
 exports.updateRestaurant = asyncHandler(async (req, res) => {
   const { name, address, phone, logo, settings, location, geofenceRadius } = req.body;
-  const restaurant = await Restaurant.findById(req.params.id);
+  const restaurant = await restaurants.findById(req.params.id);
   if (!restaurant) throw ApiError.notFound('Restaurant not found');
 
   // A manager may only update a restaurant they own / are scoped to.
@@ -64,23 +50,28 @@ exports.updateRestaurant = asyncHandler(async (req, res) => {
     if (!owns && !scoped) throw ApiError.forbidden();
   }
 
-  if (name) restaurant.name = name;
-  if (address) restaurant.address = address;
-  if (phone) restaurant.phone = phone;
-  if (logo) restaurant.logo = logo;
-  if (settings) restaurant.settings = settings;
+  const patch = {
+    name: name || undefined,
+    address: address || undefined,
+    phone: phone || undefined,
+    logo: logo || undefined,
+    settings: settings || undefined,
+    geofenceRadius: geofenceRadius != null ? Number(geofenceRadius) : undefined,
+  };
   // Geofence config for QR ordering. `location: null` turns the geofence off.
   if (location === null) {
-    restaurant.location = undefined;
+    patch.lat = null;
+    patch.lng = null;
   } else if (location && typeof location.lat === 'number' && typeof location.lng === 'number') {
-    restaurant.location = { lat: location.lat, lng: location.lng };
+    patch.lat = location.lat;
+    patch.lng = location.lng;
   }
-  if (geofenceRadius != null) restaurant.geofenceRadius = Number(geofenceRadius);
-  await restaurant.save();
-  return ok(res, { restaurant }, 'Restaurant updated');
+
+  const updated = await restaurants.update(restaurant._id, patch);
+  return ok(res, { restaurant: updated }, 'Restaurant updated');
 });
 
 exports.getAllRestaurants = asyncHandler(async (req, res) => {
-  const restaurants = await Restaurant.find().populate('owner', 'name email');
-  return ok(res, { count: restaurants.length, restaurants });
+  const list = await restaurants.listAllWithOwner();
+  return ok(res, { count: list.length, restaurants: list });
 });

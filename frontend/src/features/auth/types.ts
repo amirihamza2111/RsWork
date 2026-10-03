@@ -19,12 +19,8 @@ export interface AuthUser {
   isVerified?: boolean
 }
 
-export interface LoginResponse {
-  token: string
+export interface RegisterRestaurantResponse {
   user: AuthUser
-}
-
-export interface RegisterRestaurantResponse extends LoginResponse {
   restaurant: { _id: string; name: string }
   verifyToken?: string
 }

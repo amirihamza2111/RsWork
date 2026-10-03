@@ -1,10 +1,11 @@
-const Feedback = require('../models/Feedback');
-const Order = require('../models/Order');
-const Table = require('../models/Table');
+const feedback = require('../db/feedback');
+const orders = require('../db/orders');
+const tables = require('../db/tables');
+const { isUuid } = require('../db/mappers');
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const { ok, created } = require('../utils/apiResponse');
-const { getRestaurantScope } = require('../utils/scope');
+const { requireStaffScope, toId } = require('../utils/scope');
 const { sanitizeText } = require('../utils/sanitizeText');
 const { parsePagination, meta } = require('../utils/pagination');
 
@@ -12,23 +13,15 @@ const { parsePagination, meta } = require('../utils/pagination');
 // @route  GET /api/feedbacks
 // @access Manager / Superadmin
 exports.getFeedbacks = asyncHandler(async (req, res) => {
-  const scope = getRestaurantScope(req.user);
-  const filter = scope ? { restaurant: scope } : {};
-  if (req.query.status === 'new' || req.query.status === 'reviewed') {
-    filter.status = req.query.status;
-  }
+  const scope = requireStaffScope(req.user);
+  const status =
+    req.query.status === 'new' || req.query.status === 'reviewed' ? req.query.status : undefined;
 
   const { page, limit, skip } = parsePagination(req.query);
-  const [feedbacks, total] = await Promise.all([
-    Feedback.find(filter)
-      .populate('table', 'number')
-      .populate('order', 'orderNumber')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean(),
-    Feedback.countDocuments(filter),
-  ]);
+  const { feedbacks, total } = await feedback.list(
+    { restaurantId: scope || undefined, status },
+    { limit, offset: skip }
+  );
 
   return ok(res, { count: feedbacks.length, feedbacks, ...meta(total, page, limit) });
 });
@@ -39,29 +32,27 @@ exports.getFeedbacks = asyncHandler(async (req, res) => {
 exports.createFeedback = asyncHandler(async (req, res) => {
   const { tableId, orderId, rating, category, comment } = req.body;
 
+  const score = Number(rating);
   if (!rating) throw ApiError.badRequest('Rating is required');
+  if (!Number.isInteger(score) || score < 1 || score > 5) {
+    throw ApiError.badRequest('Rating must be between 1 and 5');
+  }
 
   // Derive the restaurant from the order or table so feedback is tenant-scoped.
-  let restaurant;
-  if (orderId) {
-    const order = await Order.findById(orderId).select('restaurant');
-    restaurant = order?.restaurant;
-  }
-  if (!restaurant && tableId) {
-    const table = await Table.findById(tableId).select('restaurant');
-    restaurant = table?.restaurant;
-  }
+  const order = isUuid(orderId) ? await orders.findById(orderId) : null;
+  const table = isUuid(tableId) ? await tables.findById(tableId) : null;
+  const restaurant = toId(order?.restaurant) || toId(table?.restaurant) || undefined;
 
-  const feedback = await Feedback.create({
+  const created_ = await feedback.create({
     restaurant,
-    table: tableId || undefined,
-    order: orderId || undefined,
-    rating,
+    table: table?._id,
+    order: order?._id,
+    rating: score,
     category: sanitizeText(category, 50),
     comment: sanitizeText(comment, 500),
   });
 
-  return created(res, { feedback }, 'Thanks for your feedback');
+  return created(res, { feedback: created_ }, 'Thanks for your feedback');
 });
 
 // @desc   Mark feedback reviewed / unreviewed
@@ -69,28 +60,23 @@ exports.createFeedback = asyncHandler(async (req, res) => {
 // @access Manager / Superadmin
 exports.updateFeedbackReviewedStatus = asyncHandler(async (req, res) => {
   const { reviewed } = req.body;
-  const feedback = await Feedback.findById(req.params.id);
-  if (!feedback) throw ApiError.notFound('Feedback not found');
+  const existing = await feedback.findById(req.params.id);
+  if (!existing) throw ApiError.notFound('Feedback not found');
 
-  const scope = getRestaurantScope(req.user);
-  if (scope && String(feedback.restaurant || '') !== scope) {
+  const scope = requireStaffScope(req.user);
+  if (scope && String(existing.restaurant || '') !== scope) {
     throw ApiError.forbidden();
   }
 
-  feedback.status = reviewed ? 'reviewed' : 'new';
-  feedback.reviewedAt = reviewed ? new Date() : null;
-  await feedback.save();
-  return ok(res, { feedback }, 'Feedback updated');
+  const updated = await feedback.setReviewed(existing._id, Boolean(reviewed));
+  return ok(res, { feedback: updated }, 'Feedback updated');
 });
 
 // @desc   Count of unreviewed feedbacks
 // @route  GET /api/feedbacks/unread-count
 // @access Manager / Superadmin
 exports.getUnreadCount = asyncHandler(async (req, res) => {
-  const scope = getRestaurantScope(req.user);
-  const filter = { status: 'new' };
-  if (scope) filter.restaurant = scope;
-
-  const unreadCount = await Feedback.countDocuments(filter);
+  const scope = requireStaffScope(req.user);
+  const unreadCount = await feedback.countNew(scope || undefined);
   return ok(res, { unreadCount });
 });

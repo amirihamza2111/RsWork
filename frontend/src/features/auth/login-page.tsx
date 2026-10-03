@@ -6,12 +6,12 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent } from '@/components/ui/card'
 import { PasswordInput } from '@/components/ui/password-input'
-import { useAuth } from './auth-context'
+import { EMAIL_NOT_CONFIRMED, useAuth } from './auth-context'
 import { getRoleHome } from './types'
 import type { ApiError } from '@/lib/api'
 
 export function LoginPage() {
-  const { login } = useAuth()
+  const { login, resendVerification } = useAuth()
   const navigate = useNavigate()
   const location = useLocation() as { state?: { from?: { pathname: string } } }
 
@@ -33,6 +33,12 @@ export function LoginPage() {
       const redirectTo = from && from !== '/' ? from : home
       navigate(redirectTo, { replace: true })
     } catch (err) {
+      // Unverified account: send a fresh code and go collect it.
+      if ((err as { code?: string }).code === EMAIL_NOT_CONFIRMED) {
+        await resendVerification(email.trim()).catch(() => null)
+        navigate('/verify-otp', { replace: true })
+        return
+      }
       setError((err as ApiError).message)
     } finally {
       setSubmitting(false)

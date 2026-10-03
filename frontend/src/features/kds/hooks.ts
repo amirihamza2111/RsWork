@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { getSocket } from '@/lib/socket'
+import { restaurantTopic, subscribe, watchStatus } from '@/lib/realtime'
 
 export type ItemStatus = 'queued' | 'preparing' | 'ready' | 'served'
 
@@ -51,41 +51,24 @@ const KDS_EVENTS = [
   'orderCancelled',
 ]
 
-// Joins the restaurant room and refetches the board whenever a relevant
-// realtime event arrives.
+// Listens on the restaurant channel and refetches the board whenever a
+// relevant realtime event arrives.
 export function useKdsRealtime(restaurantId?: string) {
   const qc = useQueryClient()
   useEffect(() => {
     if (!restaurantId) return
-    const s = getSocket()
-    const join = () => s.emit('joinRestaurant', restaurantId)
-    join()
-    s.on('connect', join)
-
-    const refresh = () => qc.invalidateQueries({ queryKey: ['orders', 'kds'] })
-    KDS_EVENTS.forEach((e) => s.on(e, refresh))
-
-    return () => {
-      s.off('connect', join)
-      KDS_EVENTS.forEach((e) => s.off(e, refresh))
-    }
+    return subscribe(restaurantTopic(restaurantId), KDS_EVENTS, () =>
+      qc.invalidateQueries({ queryKey: ['orders', 'kds'] })
+    )
   }, [restaurantId, qc])
 }
 
-export function useSocketConnected() {
+export function useRealtimeConnected(restaurantId?: string) {
   const [connected, setConnected] = useState(false)
   useEffect(() => {
-    const s = getSocket()
-    setConnected(s.connected)
-    const on = () => setConnected(true)
-    const off = () => setConnected(false)
-    s.on('connect', on)
-    s.on('disconnect', off)
-    return () => {
-      s.off('connect', on)
-      s.off('disconnect', off)
-    }
-  }, [])
+    if (!restaurantId) return
+    return watchStatus(restaurantTopic(restaurantId), setConnected)
+  }, [restaurantId])
   return connected
 }
 

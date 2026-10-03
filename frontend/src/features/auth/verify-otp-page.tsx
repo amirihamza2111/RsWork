@@ -76,8 +76,9 @@ function CodeInput({
 }
 
 export function VerifyOtpPage() {
-  const { user, verifyEmail, resendVerification, logout } = useAuth()
+  const { user, pendingEmail, verifyEmail, resendVerification, logout } = useAuth()
   const navigate = useNavigate()
+  const email = pendingEmail ?? user?.email ?? null
 
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -85,10 +86,11 @@ export function VerifyOtpPage() {
   const [submitting, setSubmitting] = useState(false)
   const [resending, setResending] = useState(false)
 
-  // Already verified? Get out of here.
+  // Already verified? Get out of here. Nothing to verify? Back to sign in.
   useEffect(() => {
     if (user?.isVerified) navigate('/', { replace: true })
-  }, [user, navigate])
+    else if (!email) navigate('/login', { replace: true })
+  }, [user, email, navigate])
 
   async function onSubmit() {
     if (code.length !== CODE_LEN) return
@@ -106,14 +108,14 @@ export function VerifyOtpPage() {
   }
 
   async function onResend() {
-    if (!user?.email) return
+    if (!email) return
     setError(null)
     setInfo(null)
     setResending(true)
     try {
-      const result = await resendVerification(user.email)
+      const result = await resendVerification(email)
       setInfo(
-        result.verifyToken
+        result?.verifyToken
           ? `Sent. Dev code: ${result.verifyToken}`
           : 'A new code has been sent to your inbox.'
       )
@@ -134,7 +136,7 @@ export function VerifyOtpPage() {
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Verify your email</h1>
             <p className="text-sm text-muted-foreground">
-              We sent a 6-digit code to <span className="font-medium text-foreground">{user?.email}</span>
+              We sent a 6-digit code to <span className="font-medium text-foreground">{email}</span>
             </p>
           </div>
         </div>
@@ -177,7 +179,7 @@ export function VerifyOtpPage() {
               <button
                 type="button"
                 onClick={() => {
-                  logout()
+                  void logout()
                   navigate('/login', { replace: true })
                 }}
                 className="text-muted-foreground hover:text-foreground"
@@ -189,7 +191,8 @@ export function VerifyOtpPage() {
         </Card>
 
         <p className="mt-4 text-center text-xs text-muted-foreground">
-          The code expires in 15 minutes. Check your spam folder if you can’t find it.
+          The code expires after a while — request a new one if it stops working. Check your spam
+          folder if you can’t find it.
         </p>
       </div>
     </div>

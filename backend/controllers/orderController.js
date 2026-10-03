@@ -1,14 +1,16 @@
-const Order = require('../models/Order');
-const Table = require('../models/Table');
-const MenuItem = require('../models/MenuItem');
-const Payment = require('../models/Payment');
-const Restaurant = require('../models/Restaurant');
+const { sql } = require('../config/db');
 const config = require('../config');
-const { getIO } = require('../sockets/index');
+const orders = require('../db/orders');
+const tables = require('../db/tables');
+const menu = require('../db/menu');
+const payments = require('../db/payments');
+const restaurants = require('../db/restaurants');
+const { isUuid } = require('../db/mappers');
+const { getIO } = require('../realtime');
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const { ok, created } = require('../utils/apiResponse');
-const { toId, isSameRestaurant } = require('../utils/scope');
+const { toId, isSameRestaurant, requireStaffScope } = require('../utils/scope');
 const { sanitizeText } = require('../utils/sanitizeText');
 const { redactOrderForPublic } = require('../utils/orderView');
 const { distanceMeters } = require('../utils/geo');
@@ -22,6 +24,8 @@ const {
   deriveOrderStatus,
 } = require('../utils/orderWorkflow');
 
+const { ACTIVE_STATUSES } = orders;
+
 // Who may see customer/staff identity on an order (everyone else gets a
 // redacted view — important because order tracking is public).
 const canViewOrderPII = (user, order) => {
@@ -33,8 +37,6 @@ const canViewOrderPII = (user, order) => {
   if (user.role === 'client') return toId(order.client) === toId(user._id);
   return false;
 };
-
-const ACTIVE_STATUSES = ['pending', 'confirmed', 'preparing', 'ready'];
 
 // Notify the waiter responsible for a ready order: the assigned/claiming waiter
 // gets a targeted push; if the order has no waiter yet, fall back to the floor.
@@ -51,14 +53,6 @@ const notifyOrderReady = (order) => {
     sendToRestaurantWaiters(toId(order.restaurant), payload).catch(() => {});
   }
 };
-
-const POPULATE = [
-  'restaurant',
-  { path: 'table', select: 'number' },
-  { path: 'client', select: 'name email phone' },
-  { path: 'waiter', select: 'name' },
-  'items.menuItem',
-];
 
 const canReadOrder = (user, order) => {
   if (!user) return true; // public tracking links
@@ -90,12 +84,24 @@ const canCancelOrder = (user, order) => {
 };
 
 const emitOrderEventToRooms = (io, order, eventName) => {
-  if (!io) return;
   const rooms = [
     toId(order.restaurant) ? `restaurant_${toId(order.restaurant)}` : null,
     toId(order.table) ? `table_${toId(order.table)}` : null,
   ].filter(Boolean);
   rooms.forEach((room) => io.to(room).emit(eventName, { success: true, order }));
+};
+
+const emitOrderReady = (io, order, message) => {
+  emitOrderEventToRooms(io, order, 'order_ready');
+  if (toId(order.waiter)) {
+    io.to(`waiter_${toId(order.waiter)}`).emit('order_ready', {
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      tableId: toId(order.table),
+      message,
+    });
+  }
+  notifyOrderReady(order);
 };
 
 // @desc   Place an order (public — placed by a diner after scanning the table QR)
@@ -107,10 +113,8 @@ exports.createOrder = asyncHandler(async (req, res) => {
     throw ApiError.badRequest('Please provide table and at least one item');
   }
 
-  const tableDocument = await Table.findById(table);
-  if (!tableDocument) {
-    throw ApiError.badRequest('Invalid table');
-  }
+  const tableDocument = await tables.findById(table);
+  if (!tableDocument) throw ApiError.badRequest('Invalid table');
 
   // Public (diner) orders must carry the table's current, unexpired session id.
   // Staff place orders authenticated, so they bypass this. This is what stops a
@@ -126,9 +130,7 @@ exports.createOrder = asyncHandler(async (req, res) => {
     // Geofence: when the restaurant has a location configured, the diner must be
     // physically near it. Dormant (skipped) until the manager sets coordinates,
     // so it never blocks before it's configured.
-    const geo = await Restaurant.findById(tableDocument.restaurant)
-      .select('location geofenceRadius')
-      .lean();
+    const geo = await restaurants.findById(tableDocument.restaurant);
     if (geo?.location?.lat != null && geo.location.lng != null) {
       const { lat, lng } = req.body;
       if (typeof lat !== 'number' || typeof lng !== 'number') {
@@ -146,8 +148,8 @@ exports.createOrder = asyncHandler(async (req, res) => {
 
   // Look up real prices from the DB; ignore any prices sent by the client.
   const requestedIds = items.map((item) => toId(item.menuItem)).filter(Boolean);
-  const menuItems = await MenuItem.find({ _id: { $in: requestedIds }, restaurant });
-  const menuById = new Map(menuItems.map((m) => [String(m._id), m]));
+  const menuItems = await menu.findItemsForRestaurant(requestedIds, restaurant);
+  const menuById = new Map(menuItems.map((m) => [m._id, m]));
 
   const orderItems = items.map((item) => {
     const menuItem = menuById.get(toId(item.menuItem));
@@ -157,7 +159,7 @@ exports.createOrder = asyncHandler(async (req, res) => {
     if (!menuItem.isAvailable) {
       throw ApiError.badRequest(`Item is not available: ${menuItem.name?.fr || menuItem._id}`);
     }
-    const quantity = Math.max(1, Number(item.quantity) || 1);
+    const quantity = Math.max(1, Math.floor(Number(item.quantity)) || 1);
     return {
       menuItem: menuItem._id,
       quantity,
@@ -170,48 +172,63 @@ exports.createOrder = asyncHandler(async (req, res) => {
 
   const totalAmount = orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
-  // Anti-abuse caps (Problem 3): a photographed QR can't flood a table. Cap the
-  // number of open orders and the total unpaid tab per table.
-  const openFilter = {
-    table: tableDocument._id,
-    status: { $in: ACTIVE_STATUSES },
-    paymentStatus: { $ne: 'paid' },
-  };
-  const activeCount = await Order.countDocuments(openFilter);
-  if (activeCount >= config.orders.maxActivePerTable) {
-    throw ApiError.badRequest('This table has too many open orders — please ask a staff member.');
-  }
-  const [openAgg] = await Order.aggregate([
-    { $match: openFilter },
-    { $group: { _id: null, sum: { $sum: '$totalAmount' } } },
-  ]);
-  if ((openAgg?.sum || 0) + totalAmount > config.orders.maxOpenTab) {
-    throw ApiError.badRequest('This table has reached its open-tab limit — please settle the bill first.');
-  }
-
   // Attach the caller's identity when known, instead of trusting body ids.
-  const orderClient = req.user?.role === 'client' ? req.user._id : client || undefined;
-  // Section routing (Problem 1): a waiter who places it owns it; otherwise route
-  // to the table's assigned waiter so the "ready" ping targets one person.
+  const orderClient =
+    req.user?.role === 'client' ? req.user._id : isUuid(client) ? client : undefined;
+  // Section routing: a waiter who places it owns it; otherwise route to the
+  // table's assigned waiter so the "ready" ping targets one person.
   const orderWaiter =
     req.user?.role === 'waiter'
       ? req.user._id
-      : waiter || tableDocument.assignedWaiter || undefined;
+      : (isUuid(waiter) ? waiter : null) || tableDocument.assignedWaiter || undefined;
+  const method = ['cash', 'card', 'mobile'].includes(paymentMethod) ? paymentMethod : undefined;
 
-  const order = await Order.create({
-    restaurant,
-    table,
-    client: orderClient,
-    waiter: orderWaiter,
-    items: orderItems,
-    notes: sanitizeText(notes, 1000),
-    paymentMethod,
-    totalAmount,
+  const orderRow = await sql.begin(async (tx) => {
+    // Lock the table so concurrent orders for it are checked one at a time —
+    // the caps below can't be bypassed by firing requests in parallel.
+    await tables.findById(tableDocument._id, { forUpdate: true, db: tx });
+
+    // Anti-abuse caps: a photographed QR can't flood a table. Cap the number of
+    // open orders and the total unpaid tab per table.
+    const open = await orders.openTabForTable(tableDocument._id, tx);
+    if (open.count >= config.orders.maxActivePerTable) {
+      throw ApiError.badRequest('This table has too many open orders — please ask a staff member.');
+    }
+    if (Number(open.sum) + totalAmount > config.orders.maxOpenTab) {
+      throw ApiError.badRequest('This table has reached its open-tab limit — please settle the bill first.');
+    }
+
+    const row = await orders.insert(
+      tx,
+      {
+        restaurant,
+        table: tableDocument._id,
+        client: orderClient,
+        waiter: orderWaiter,
+        notes: sanitizeText(notes, 1000),
+        paymentMethod: method,
+        totalAmount,
+      },
+      orderItems
+    );
+    await tables.update(tableDocument._id, { status: 'occupied' }, tx);
+
+    if (method === 'cash' || method === 'mobile') {
+      await payments.create(
+        {
+          order: row.id,
+          restaurant,
+          amount: totalAmount,
+          method: method === 'mobile' ? 'card' : 'cash',
+          status: 'pending',
+        },
+        tx
+      );
+    }
+    return row;
   });
 
-  await Table.updateOne({ _id: tableDocument._id }, { $set: { status: 'occupied' } });
-  await order.populate(POPULATE);
-
+  const order = await orders.populateById(orderRow.id);
   const io = getIO();
   emitOrderEventToRooms(io, order, 'new_order');
   emitOrderEventToRooms(io, order, 'newOrder'); // backward-compatible
@@ -220,66 +237,53 @@ exports.createOrder = asyncHandler(async (req, res) => {
   if (orderItems.some((item) => item.prepStation === 'bar')) {
     emitOrderEventToRooms(io, order, 'drinks_requested');
   }
-
-  if (paymentMethod === 'cash' || paymentMethod === 'mobile') {
-    await Payment.create({
-      order: order._id,
-      restaurant,
-      amount: totalAmount,
-      method: paymentMethod === 'mobile' ? 'card' : 'cash',
-      status: 'pending',
-    });
-    io?.to(`restaurant_${toId(restaurant)}`).emit('cashPaymentRequested', {
+  if (method === 'cash' || method === 'mobile') {
+    io.to(`restaurant_${toId(restaurant)}`).emit('cashPaymentRequested', {
       success: true,
       order,
-      paymentMethod,
+      paymentMethod: method,
     });
   }
 
   return created(res, { order }, 'Order placed');
 });
 
+const parseDate = (value) => {
+  if (!value) return undefined;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+};
+
+// Role-based visibility filter shared by the list endpoints.
+const scopeFilterFor = (user) => {
+  const role = user.role;
+  if (role === 'superadmin') return {};
+  if (['manager', 'cashier', 'cook'].includes(role)) return { restaurantId: requireStaffScope(user) };
+  if (role === 'waiter') return { restaurantId: requireStaffScope(user), waiterId: user._id };
+  if (role === 'client') return { clientId: user._id };
+  throw ApiError.forbidden();
+};
+
 // @desc   List orders (scoped by role)
 // @route  GET /api/orders
 exports.getOrders = asyncHandler(async (req, res) => {
-  const user = req.user;
   const { status, startDate, endDate } = req.query;
-  const role = user.role;
-
-  let filter;
-  if (role === 'superadmin') {
-    filter = {};
-  } else if (['manager', 'cashier', 'cook'].includes(role)) {
-    filter = { restaurant: user.restaurant };
-  } else if (role === 'waiter') {
-    filter = { restaurant: user.restaurant, waiter: user._id };
-  } else if (role === 'client') {
-    filter = { client: user._id };
-  } else {
-    throw ApiError.forbidden();
-  }
-
-  if (status) filter.status = status;
-  if (startDate || endDate) {
-    filter.createdAt = {};
-    if (startDate) filter.createdAt.$gte = new Date(startDate);
-    if (endDate) filter.createdAt.$lte = new Date(endDate);
-  }
-
-  const orders = await Order.find(filter).populate(POPULATE).sort({ createdAt: -1 });
-  return ok(res, { count: orders.length, orders });
+  const filter = {
+    ...scopeFilterFor(req.user),
+    status: status && ORDER_STATUSES.includes(status) ? status : undefined,
+    from: parseDate(startDate),
+    to: parseDate(endDate),
+  };
+  const list = await orders.list(filter);
+  return ok(res, { count: list.length, orders: list });
 });
 
 // @desc   Get one order (public tracking allowed)
 // @route  GET /api/orders/:id
 exports.getOrderById = asyncHandler(async (req, res) => {
-  const order = await Order.findById(req.params.id).populate(POPULATE);
-  if (!order) {
-    throw ApiError.notFound('Order not found');
-  }
-  if (!canReadOrder(req.user, order)) {
-    throw ApiError.forbidden();
-  }
+  const order = await orders.populateById(req.params.id);
+  if (!order) throw ApiError.notFound('Order not found');
+  if (!canReadOrder(req.user, order)) throw ApiError.forbidden();
   // Public/anonymous trackers get a PII-redacted view.
   const view = canViewOrderPII(req.user, order) ? order : redactOrderForPublic(order);
   return ok(res, { order: view });
@@ -293,13 +297,9 @@ exports.updateOrderStatus = asyncHandler(async (req, res) => {
     throw ApiError.badRequest('Please provide a valid status');
   }
 
-  const order = await Order.findById(req.params.id);
-  if (!order) {
-    throw ApiError.notFound('Order not found');
-  }
-  if (!canUpdateOrderStatus(req.user, order)) {
-    throw ApiError.forbidden();
-  }
+  const order = await orders.findById(req.params.id);
+  if (!order) throw ApiError.notFound('Order not found');
+  if (!canUpdateOrderStatus(req.user, order)) throw ApiError.forbidden();
 
   if (order.status !== status && !canTransitionOrder(order.status, status)) {
     throw ApiError.badRequest(`Cannot change order status from '${order.status}' to '${status}'`);
@@ -307,43 +307,28 @@ exports.updateOrderStatus = asyncHandler(async (req, res) => {
 
   const set = { status };
   // A waiter who picks up an unassigned order becomes its waiter.
-  if (req.user.role === 'waiter' && !toId(order.waiter)) set.waiter = req.user._id;
-  // Serving is a race — two waiters may tap at once. Record who served and mark
-  // every item served in the same atomic write.
-  if (status === 'served') {
-    set.servedBy = req.user._id;
-    set['items.$[].status'] = 'served';
-  }
+  if (req.user.role === 'waiter' && !toId(order.waiter)) set.waiter_id = req.user._id;
+  // Serving is a race — two waiters may tap at once. Record who served.
+  if (status === 'served') set.served_by_id = req.user._id;
 
   // Optimistic concurrency: only transition if the status is still what we read,
   // so the loser of a double-tap gets a clear 409 instead of a silent re-action.
-  const updated = await Order.findOneAndUpdate(
-    { _id: order._id, status: order.status },
-    { $set: set },
-    { new: true }
-  ).populate(POPULATE);
+  const moved = await sql.begin(async (tx) => {
+    const row = await orders.updateIf(order._id, set, [sql`status = ${order.status}`], tx);
+    if (row && status === 'served') await orders.markAllItemsServed(order._id, tx);
+    return row;
+  });
 
-  if (!updated) {
-    const fresh = await Order.findById(order._id).select('status');
+  if (!moved) {
+    const fresh = await orders.findById(order._id);
     throw ApiError.conflict(`Order was already moved to '${fresh?.status ?? 'another status'}'`);
   }
 
+  const updated = await orders.populateById(order._id);
   const io = getIO();
   emitOrderEventToRooms(io, updated, 'order_updated');
   emitOrderEventToRooms(io, updated, 'orderStatusUpdated'); // backward-compatible
-
-  if (status === 'ready') {
-    emitOrderEventToRooms(io, updated, 'order_ready');
-    if (updated.waiter) {
-      io?.to(`waiter_${toId(updated.waiter)}`).emit('order_ready', {
-        orderId: updated._id,
-        orderNumber: updated.orderNumber,
-        tableId: toId(updated.table),
-        message: 'Your order is ready to serve',
-      });
-    }
-    notifyOrderReady(updated);
-  }
+  if (status === 'ready') emitOrderReady(io, updated, 'Your order is ready to serve');
 
   return ok(res, { order: updated }, 'Order updated');
 });
@@ -351,50 +336,31 @@ exports.updateOrderStatus = asyncHandler(async (req, res) => {
 // @desc   Active orders for a table
 // @route  GET /api/orders/table/:tableId
 exports.getTableOrders = asyncHandler(async (req, res) => {
-  const role = req.user.role;
-  const filter = {
-    table: req.params.tableId,
-    status: { $in: ['pending', 'confirmed', 'preparing', 'ready'] },
-  };
-
-  if (role === 'superadmin') {
-    // no extra scope
-  } else if (['manager', 'cashier', 'cook'].includes(role)) {
-    filter.restaurant = req.user.restaurant;
-  } else if (role === 'waiter') {
-    filter.restaurant = req.user.restaurant;
-    filter.waiter = req.user._id;
-  } else if (role === 'client') {
-    filter.client = req.user._id;
-  } else {
-    throw ApiError.forbidden();
-  }
-
-  const orders = await Order.find(filter).populate(POPULATE).sort({ createdAt: -1 });
-  return ok(res, { count: orders.length, orders });
+  if (!isUuid(req.params.tableId)) throw ApiError.badRequest('Invalid table id');
+  const list = await orders.list({
+    ...scopeFilterFor(req.user),
+    tableId: req.params.tableId,
+    statuses: ACTIVE_STATUSES,
+  });
+  return ok(res, { count: list.length, orders: list });
 });
 
 // @desc   Cancel an order
 // @route  PUT /api/orders/:id/cancel
 exports.cancelOrder = asyncHandler(async (req, res) => {
-  const order = await Order.findById(req.params.id);
-  if (!order) {
-    throw ApiError.notFound('Order not found');
-  }
-  if (!canCancelOrder(req.user, order)) {
-    throw ApiError.forbidden();
-  }
+  const order = await orders.findById(req.params.id);
+  if (!order) throw ApiError.notFound('Order not found');
+  if (!canCancelOrder(req.user, order)) throw ApiError.forbidden();
 
-  order.status = 'cancelled';
-  await order.save();
-  await order.populate(POPULATE);
+  await orders.update(order._id, { status: 'cancelled' });
+  const updated = await orders.populateById(order._id);
 
-  getIO()?.to(`restaurant_${toId(order.restaurant)}`).emit('orderCancelled', {
+  getIO().to(`restaurant_${toId(updated.restaurant)}`).emit('orderCancelled', {
     success: true,
-    order,
+    order: updated,
   });
 
-  return ok(res, { order }, 'Order cancelled successfully');
+  return ok(res, { order: updated }, 'Order cancelled successfully');
 });
 
 // @desc   Diner asks to pay at the table — notifies the cashier/waiter to come.
@@ -402,31 +368,30 @@ exports.cancelOrder = asyncHandler(async (req, res) => {
 // @access Public (diner)
 exports.requestBill = asyncHandler(async (req, res) => {
   const method = req.body?.method === 'card' ? 'card' : 'cash';
-  const order = await Order.findById(req.params.id).populate('table', 'number');
+  const order = await orders.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   // Don't ping staff for bills that can't be settled (spam guard).
   if (order.paymentStatus === 'paid') throw ApiError.badRequest('Order is already paid');
   if (order.status === 'cancelled') throw ApiError.badRequest('Order is cancelled');
 
-  const io = getIO();
+  const table = order.table ? await tables.findById(order.table) : null;
   const payload = {
     orderId: order._id,
     orderNumber: order.orderNumber,
-    table: order.table,
+    table: table ? { _id: table._id, number: table.number } : null,
     method,
   };
-  io?.to(`restaurant_${toId(order.restaurant)}`).emit('bill_requested', payload);
-  if (toId(order.waiter)) {
-    io?.to(`waiter_${toId(order.waiter)}`).emit('bill_requested', payload);
-  }
+  const io = getIO();
+  io.to(`restaurant_${toId(order.restaurant)}`).emit('bill_requested', payload);
+  if (toId(order.waiter)) io.to(`waiter_${toId(order.waiter)}`).emit('bill_requested', payload);
 
   return ok(res, { requested: true, method }, 'Staff have been notified');
 });
 
 // Resolve the restaurant scope for staff endpoints (superadmin may pass ?restaurantId).
 const resolveStaffRestaurant = (req) => {
-  if (req.user.role === 'superadmin') return req.query.restaurantId || null;
-  return toId(req.user.restaurant) || null;
+  const id = req.user.role === 'superadmin' ? req.query.restaurantId : toId(req.user.restaurant);
+  return isUuid(id) ? id : null;
 };
 
 // @desc   Kitchen Display System board — active orders in FIFO order
@@ -434,20 +399,14 @@ const resolveStaffRestaurant = (req) => {
 // @access cook / manager / superadmin
 exports.getKdsOrders = asyncHandler(async (req, res) => {
   const restaurant = resolveStaffRestaurant(req);
-  if (!restaurant) {
-    throw ApiError.forbidden('Restaurant context is required');
-  }
+  if (!restaurant) throw ApiError.forbidden('Restaurant context is required');
 
-  const orders = await Order.find({
-    restaurant,
-    status: { $in: ACTIVE_STATUSES }, // show orders immediately — the geofence is the gate
-  })
-    .populate('table', 'number')
-    .populate('waiter', 'name')
-    .populate('items.menuItem', 'name prepStation')
-    .sort({ createdAt: 1 }); // oldest first = front of the queue
-
-  return ok(res, { count: orders.length, orders });
+  // Show orders immediately — the geofence is the gate. Oldest first = front of the queue.
+  const list = await orders.list(
+    { restaurantId: restaurant, statuses: ACTIVE_STATUSES },
+    { sort: 'asc' }
+  );
+  return ok(res, { count: list.length, orders: list });
 });
 
 // @desc   Incoming orders awaiting staff confirmation (the anti-abuse accept queue)
@@ -455,22 +414,17 @@ exports.getKdsOrders = asyncHandler(async (req, res) => {
 // @access waiter / cook / manager / superadmin
 exports.getIncomingOrders = asyncHandler(async (req, res) => {
   const restaurant = resolveStaffRestaurant(req);
-  if (!restaurant) {
-    throw ApiError.forbidden('Restaurant context is required');
-  }
+  if (!restaurant) throw ApiError.forbidden('Restaurant context is required');
 
-  const orders = await Order.find({ restaurant, status: 'pending' })
-    .populate(POPULATE)
-    .sort({ createdAt: 1 });
-
-  return ok(res, { count: orders.length, orders });
+  const list = await orders.list({ restaurantId: restaurant, status: 'pending' }, { sort: 'asc' });
+  return ok(res, { count: list.length, orders: list });
 });
 
 // @desc   Confirm (accept) a pending order so the kitchen can start it
 // @route  PUT /api/orders/:id/confirm
 // @access waiter / cook / manager / superadmin
 exports.confirmOrder = asyncHandler(async (req, res) => {
-  const order = await Order.findById(req.params.id);
+  const order = await orders.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!canUpdateOrderStatus(req.user, order)) throw ApiError.forbidden();
 
@@ -478,14 +432,10 @@ exports.confirmOrder = asyncHandler(async (req, res) => {
     throw ApiError.badRequest(`Only pending orders can be confirmed (this one is '${order.status}')`);
   }
 
-  const updated = await Order.findOneAndUpdate(
-    { _id: order._id, status: 'pending' },
-    { $set: { status: 'confirmed' } },
-    { new: true }
-  ).populate(POPULATE);
+  const moved = await orders.updateIf(order._id, { status: 'confirmed' }, [sql`status = 'pending'`]);
+  if (!moved) throw ApiError.conflict('Order is no longer pending');
 
-  if (!updated) throw ApiError.conflict('Order is no longer pending');
-
+  const updated = await orders.populateById(order._id);
   const io = getIO();
   emitOrderEventToRooms(io, updated, 'order_updated');
   emitOrderEventToRooms(io, updated, 'order_confirmed');
@@ -497,21 +447,19 @@ exports.confirmOrder = asyncHandler(async (req, res) => {
 // @route  PUT /api/orders/:id/claim
 // @access waiter / manager / superadmin
 exports.claimOrder = asyncHandler(async (req, res) => {
-  const order = await Order.findById(req.params.id);
+  const order = await orders.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!isSameRestaurant(req.user, order.restaurant)) throw ApiError.forbidden();
 
-  const updated = await Order.findOneAndUpdate(
-    { _id: order._id, waiter: { $in: [null, undefined] } },
-    { $set: { waiter: req.user._id } },
-    { new: true }
-  ).populate(POPULATE);
-
-  if (!updated) {
-    const fresh = await Order.findById(order._id).populate('waiter', 'name');
+  const claimed = await orders.updateIf(order._id, { waiter_id: req.user._id }, [
+    sql`waiter_id is null`,
+  ]);
+  if (!claimed) {
+    const fresh = await orders.populateById(order._id);
     throw ApiError.conflict(`Already claimed by ${fresh?.waiter?.name || 'another waiter'}`);
   }
 
+  const updated = await orders.populateById(order._id);
   emitOrderEventToRooms(getIO(), updated, 'order_updated');
   return ok(res, { order: updated }, 'Order claimed');
 });
@@ -525,74 +473,48 @@ exports.updateOrderItemStatus = asyncHandler(async (req, res) => {
     throw ApiError.badRequest('Please provide a valid item status');
   }
 
-  const order = await Order.findById(req.params.id);
-  if (!order) {
-    throw ApiError.notFound('Order not found');
-  }
-  if (!canUpdateOrderStatus(req.user, order)) {
-    throw ApiError.forbidden();
-  }
+  // The order row is locked for the whole read-modify-write, so the cook claim
+  // and the derived order status can't race another KDS screen.
+  const orderId = await sql.begin(async (tx) => {
+    const order = await orders.findById(req.params.id, { forUpdate: true, db: tx });
+    if (!order) throw ApiError.notFound('Order not found');
+    if (!canUpdateOrderStatus(req.user, order)) throw ApiError.forbidden();
 
-  const item = order.items.id(req.params.itemId);
-  if (!item) {
-    throw ApiError.notFound('Order item not found');
-  }
+    const item = order.items.find((i) => i._id === req.params.itemId);
+    if (!item) throw ApiError.notFound('Order item not found');
 
-  if (item.status !== status && !canTransitionItem(item.status, status)) {
-    throw ApiError.badRequest(`Cannot change item status from '${item.status}' to '${status}'`);
-  }
-
-  // KDS claim-on-start (Problem 2): the first cook to touch a ticket owns it, so
-  // two cooks on separate KDS screens can never prepare the same order. Atomic —
-  // the claim only succeeds if the ticket is unclaimed or already this cook's.
-  if (req.user.role === 'cook') {
-    const claimed = await Order.findOneAndUpdate(
-      {
-        _id: order._id,
-        $or: [{ preparedBy: { $in: [null, undefined] } }, { preparedBy: req.user._id }],
-      },
-      { $set: { preparedBy: req.user._id, preparedByName: req.user.name } },
-      { new: true }
-    );
-    if (!claimed) {
-      throw ApiError.conflict(
-        `Ticket is being prepared by ${order.preparedByName || 'another cook'}`
-      );
+    if (item.status !== status && !canTransitionItem(item.status, status)) {
+      throw ApiError.badRequest(`Cannot change item status from '${item.status}' to '${status}'`);
     }
-    order.preparedBy = claimed.preparedBy;
-    order.preparedByName = claimed.preparedByName;
-  }
 
-  item.status = status;
-  // Roll the change up to the order-level status (unless cancelled/served).
-  if (order.status !== 'cancelled') {
-    order.status = deriveOrderStatus(order);
-  }
+    const set = {};
+    // KDS claim-on-start: the first cook to touch a ticket owns it, so two cooks
+    // on separate KDS screens can never prepare the same order.
+    if (req.user.role === 'cook') {
+      if (order.preparedBy && toId(order.preparedBy) !== toId(req.user._id)) {
+        throw ApiError.conflict(`Ticket is being prepared by ${order.preparedByName || 'another cook'}`);
+      }
+      set.prepared_by_id = req.user._id;
+      set.prepared_by_name = req.user.name;
+    }
 
-  if (req.user.role === 'waiter' && !toId(order.waiter)) {
-    order.waiter = req.user._id;
-  }
+    await orders.setItemStatus(item._id, status, tx);
+    item.status = status;
+    // Roll the change up to the order-level status (unless cancelled).
+    if (order.status !== 'cancelled') set.status = deriveOrderStatus(order);
+    if (req.user.role === 'waiter' && !toId(order.waiter)) set.waiter_id = req.user._id;
 
-  await order.save();
-  await order.populate(POPULATE);
+    if (Object.keys(set).length) await orders.update(order._id, set, tx);
+    return order._id;
+  });
 
+  const order = await orders.populateById(orderId);
   const io = getIO();
   emitOrderEventToRooms(io, order, 'kds_updated');
   emitOrderEventToRooms(io, order, 'order_updated');
 
   // When the whole order becomes ready, notify the responsible waiter.
-  if (order.status === 'ready') {
-    emitOrderEventToRooms(io, order, 'order_ready');
-    if (order.waiter) {
-      io?.to(`waiter_${toId(order.waiter)}`).emit('order_ready', {
-        orderId: order._id,
-        orderNumber: order.orderNumber,
-        tableId: toId(order.table),
-        message: 'Order is ready to serve',
-      });
-    }
-    notifyOrderReady(order);
-  }
+  if (order.status === 'ready') emitOrderReady(io, order, 'Order is ready to serve');
 
   return ok(res, { order }, 'Item status updated');
 });
@@ -602,35 +524,31 @@ exports.updateOrderItemStatus = asyncHandler(async (req, res) => {
 // @access cashier / manager / superadmin
 exports.getActiveByTable = asyncHandler(async (req, res) => {
   const tableNumber = Number(req.query.tableNumber);
-  if (!Number.isFinite(tableNumber) || tableNumber <= 0) {
+  if (!Number.isInteger(tableNumber) || tableNumber <= 0) {
     throw ApiError.badRequest('A valid tableNumber is required');
   }
 
   const restaurant = resolveStaffRestaurant(req);
-  if (!restaurant) {
-    throw ApiError.forbidden('Restaurant context is required');
-  }
+  if (!restaurant) throw ApiError.forbidden('Restaurant context is required');
 
-  const table = await Table.findOne({ restaurant, number: tableNumber });
-  if (!table) {
-    throw ApiError.notFound('Table not found');
-  }
+  const table = await tables.findByNumber(restaurant, tableNumber);
+  if (!table) throw ApiError.notFound('Table not found');
 
-  const orders = await Order.find({
-    restaurant,
-    table: table._id,
-    status: { $ne: 'cancelled' },
-    paymentStatus: { $ne: 'paid' },
-  })
-    .populate('items.menuItem', 'name')
-    .sort({ createdAt: 1 });
-
-  const totalDue = orders.reduce((sum, order) => sum + (order.totalAmount || 0), 0);
+  const list = await orders.list(
+    {
+      restaurantId: restaurant,
+      tableId: table._id,
+      excludeStatus: 'cancelled',
+      excludePaymentStatus: 'paid',
+    },
+    { sort: 'asc' }
+  );
+  const totalDue = list.reduce((sum, order) => sum + (order.totalAmount || 0), 0);
 
   return ok(res, {
     table: { id: table._id, number: table.number },
-    count: orders.length,
+    count: list.length,
     totalDue,
-    orders,
+    orders: list,
   });
 });

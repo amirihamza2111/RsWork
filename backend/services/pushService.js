@@ -1,6 +1,6 @@
 const webpush = require('web-push');
 const config = require('../config');
-const PushSubscription = require('../models/PushSubscription');
+const push = require('../db/push');
 
 let configured = false;
 if (config.vapid.publicKey && config.vapid.privateKey) {
@@ -8,10 +8,10 @@ if (config.vapid.publicKey && config.vapid.privateKey) {
   configured = true;
 }
 
-// Push to every subscription matching `filter`, pruning stale ones (410/404).
+// Push to every matching subscription, pruning stale ones (410/404).
 async function sendToSubscriptions(filter, payload) {
   if (!configured) return;
-  const subs = await PushSubscription.find(filter).lean();
+  const subs = await push.listFor(filter);
   if (!subs.length) return;
 
   await Promise.allSettled(
@@ -20,7 +20,7 @@ async function sendToSubscriptions(filter, payload) {
         await webpush.sendNotification(sub.subscription, JSON.stringify(payload));
       } catch (err) {
         if (err.statusCode === 410 || err.statusCode === 404) {
-          await PushSubscription.deleteOne({ _id: sub._id });
+          await push.removeById(sub.id);
         }
       }
     })
@@ -32,7 +32,7 @@ async function sendToSubscriptions(filter, payload) {
  * Used as the fallback when an order has no assigned waiter (open section).
  */
 async function sendToRestaurantWaiters(restaurantId, payload) {
-  return sendToSubscriptions({ restaurant: restaurantId }, payload);
+  return sendToSubscriptions({ restaurantId }, payload);
 }
 
 /**
@@ -41,7 +41,7 @@ async function sendToRestaurantWaiters(restaurantId, payload) {
  */
 async function sendToUser(userId, payload) {
   if (!userId) return;
-  return sendToSubscriptions({ user: userId }, payload);
+  return sendToSubscriptions({ userId }, payload);
 }
 
 module.exports = { sendToRestaurantWaiters, sendToUser, isConfigured: () => configured };

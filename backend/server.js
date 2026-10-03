@@ -1,16 +1,14 @@
 require('./instrument'); // must be first — initializes Sentry before app loads
 const config = require('./config');
 const http = require('http');
-const mongoose = require('mongoose');
 const app = require('./app');
-const connectDB = require('./config/mongodb');
-const { initSocket } = require('./sockets/index');
+const { sql, connectDB } = require('./config/db');
+const { flush: flushRealtime } = require('./realtime');
 
 const server = http.createServer(app);
 
 const start = async () => {
   await connectDB();
-  initSocket(server);
   // Listen on 0.0.0.0 to accept connections from LAN devices
   server.listen(config.port, '0.0.0.0', () => {
     console.log(`Server running on port ${config.port} [${config.nodeEnv}]`);
@@ -19,14 +17,17 @@ const start = async () => {
 
 start();
 
-// Graceful shutdown: stop accepting connections, then close the DB.
+// Graceful shutdown: stop accepting connections, deliver pending realtime
+// messages, then close the Postgres pool.
 const shutdown = (signal) => {
   console.log(`\n${signal} received. Shutting down gracefully...`);
   server.close(() => {
-    mongoose.connection.close(false).finally(() => {
-      console.log('Closed remaining connections.');
-      process.exit(0);
-    });
+    flushRealtime()
+      .then(() => sql.end({ timeout: 5 }))
+      .finally(() => {
+        console.log('Closed remaining connections.');
+        process.exit(0);
+      });
   });
 
   // Force-exit if cleanup hangs.

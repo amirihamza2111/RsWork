@@ -7,7 +7,7 @@ import { useAuth } from '@/features/auth/auth-context'
 import {
   useKdsOrders,
   useKdsRealtime,
-  useSocketConnected,
+  useRealtimeConnected,
   useUpdateItemStatus,
   itemName,
   nextItemAction,
@@ -120,7 +120,7 @@ export function KdsBoard() {
     typeof user?.restaurant === 'string' ? user.restaurant : user?.restaurant?._id
   const { data: orders, isLoading, isError, error } = useKdsOrders()
   useKdsRealtime(restaurantId)
-  const connected = useSocketConnected()
+  const connected = useRealtimeConnected(restaurantId)
   useTick()
 
   return (

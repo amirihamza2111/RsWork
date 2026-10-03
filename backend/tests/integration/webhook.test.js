@@ -4,33 +4,35 @@ process.env.STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_
 const test = require('node:test');
 const assert = require('node:assert');
 const http = require('http');
-const mongoose = require('mongoose');
 const Stripe = require('stripe');
 const config = require('../../config');
+const { sql } = require('../../config/db');
 const app = require('../../app');
-const Restaurant = require('../../models/Restaurant');
-const Order = require('../../models/Order');
-const Payment = require('../../models/Payment');
+const { flush } = require('../../realtime');
 
-// Own database so it can run alongside the main integration suite safely.
-const dbUri = config.dbUri.replace(/(@[^/]+\/)[^?]*/, '$1rswork_test_wh');
 const stripeKey = config.stripe.secretKey;
 const stripe = Stripe(stripeKey || 'sk_test_dummy');
+const RUN = Date.now().toString(36);
 
 let server;
 let base;
+let restaurantId;
 
 test.before(async () => {
-  await mongoose.connect(dbUri, { serverSelectionTimeoutMS: 15000 });
-  await mongoose.connection.dropDatabase();
+  const [restaurant] = await sql`
+    insert into restaurants (name, settings) values (${`WH Bistro ${RUN}`}, ${sql.json({ currency: 'TND' })})
+    returning id
+  `;
+  restaurantId = restaurant.id;
   server = http.createServer(app).listen(0);
   base = `http://127.0.0.1:${server.address().port}`;
 });
 
 test.after(async () => {
-  await mongoose.connection.dropDatabase();
-  await mongoose.disconnect();
   server.close();
+  await flush();
+  await sql`delete from restaurants where id = ${restaurantId}`;
+  await sql.end({ timeout: 5 });
 });
 
 test('webhook: a signed payment_intent.succeeded marks payment completed + order paid', async (t) => {
@@ -39,23 +41,16 @@ test('webhook: a signed payment_intent.succeeded marks payment completed + order
     return;
   }
 
-  const restaurant = await Restaurant.create({ name: 'WH Bistro', settings: { currency: 'TND' } });
-  const order = await Order.create({
-    restaurant: restaurant._id,
-    table: new mongoose.Types.ObjectId(),
-    items: [{ menuItem: new mongoose.Types.ObjectId(), quantity: 1, price: 10 }],
-    totalAmount: 10,
-    paymentStatus: 'unpaid',
-  });
-  const intentId = `pi_test_${Date.now()}`;
-  await Payment.create({
-    order: order._id,
-    restaurant: restaurant._id,
-    amount: 10,
-    method: 'card',
-    status: 'pending',
-    stripePaymentIntentId: intentId,
-  });
+  const [order] = await sql`
+    insert into orders (restaurant_id, total_amount, payment_status)
+    values (${restaurantId}, 10, 'unpaid')
+    returning id
+  `;
+  const intentId = `pi_test_${RUN}`;
+  await sql`
+    insert into payments (order_id, restaurant_id, amount, method, status, stripe_payment_intent_id)
+    values (${order.id}, ${restaurantId}, 10, 'card', 'pending', ${intentId})
+  `;
 
   const payload = JSON.stringify({
     id: 'evt_test',
@@ -75,9 +70,9 @@ test('webhook: a signed payment_intent.succeeded marks payment completed + order
   });
   assert.equal(res.status, 200);
 
-  const updatedPayment = await Payment.findOne({ stripePaymentIntentId: intentId });
-  assert.equal(updatedPayment.status, 'completed');
-  const updatedOrder = await Order.findById(order._id);
+  const [payment] = await sql`select status from payments where stripe_payment_intent_id = ${intentId}`;
+  assert.equal(payment.status, 'completed');
+  const [updatedOrder] = await sql`select payment_status from orders where id = ${order.id}`;
   assert.equal(updatedOrder.paymentStatus, 'paid');
 });
 

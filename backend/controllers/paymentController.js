@@ -3,16 +3,19 @@ const config = require('../config');
 // without a Stripe key. Card endpoints fail gracefully if it's missing.
 const stripe = config.stripe.secretKey ? require('stripe')(config.stripe.secretKey) : null;
 const PDFDocument = require('pdfkit');
-const Order = require('../models/Order');
-const Payment = require('../models/Payment');
-const { getIO } = require('../sockets/index');
+const orders = require('../db/orders');
+const payments = require('../db/payments');
+const { toPayment } = require('../db/mappers');
+const { getIO } = require('../realtime');
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const { ok } = require('../utils/apiResponse');
-const { toId, getRestaurantScope: scopeOf } = require('../utils/scope');
+const { toId, requireStaffScope } = require('../utils/scope');
 const { parsePagination, meta } = require('../utils/pagination');
 
-const getRestaurantScope = (req) => scopeOf(req.user);
+// Public diner routes (no user) and superadmins are unscoped; staff are pinned
+// to their restaurant.
+const getRestaurantScope = (req) => requireStaffScope(req.user);
 
 const isOrderAccessible = (req, order) => {
     const scope = getRestaurantScope(req);
@@ -99,6 +102,27 @@ const sanitizeTicketSegment = (value) => {
     return String(value || 'receipt').replace(/[^a-z0-9-_]/gi, '_');
 };
 
+const parseDate = (value) => {
+    if (!value) return undefined;
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? undefined : d;
+};
+
+// Marks the order paid and tells the restaurant's staff screens.
+const settleOrder = async (paymentRow, { method } = {}) => {
+    await orders.update(paymentRow.orderId, {
+        payment_status: 'paid',
+        ...(method ? { payment_method: method } : {}),
+    });
+    const order = await orders.populateById(paymentRow.orderId);
+    if (order) {
+        getIO()
+            .to(`restaurant_${toId(order.restaurant)}`)
+            .emit('paymentCompleted', { order, payment: toPayment(paymentRow) });
+    }
+    return order;
+};
+
 // @desc   Public payment config for the diner app. The publishable key is safe
 //         to expose; when blank, online card payment is disabled client-side.
 // @route  GET /api/payments/config
@@ -118,33 +142,24 @@ exports.getPayments = asyncHandler(async (req, res) => {
         throw ApiError.forbidden('Restaurant context is required');
     }
 
-    const filter = restaurantId ? { restaurant: restaurantId } : {};
-    if (status) filter.status = status;
-    if (method) filter.method = method;
-    if (startDate || endDate) {
-        filter.createdAt = {};
-        if (startDate) filter.createdAt.$gte = new Date(startDate);
-        if (endDate) filter.createdAt.$lte = new Date(endDate);
-    }
-
     const { page, limit, skip } = parsePagination(req.query);
-    const [payments, total] = await Promise.all([
-        Payment.find(filter)
-            .select('-stripeClientSecret')
-            .populate('order', 'orderNumber totalAmount paymentStatus table')
-            .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(limit)
-            .lean(),
-        Payment.countDocuments(filter),
-    ]);
+    const { payments: list, total } = await payments.list(
+        {
+            restaurantId: restaurantId || undefined,
+            status: status || undefined,
+            method: method || undefined,
+            from: parseDate(startDate),
+            to: parseDate(endDate),
+        },
+        { limit, offset: skip }
+    );
 
-    return ok(res, { count: payments.length, payments, ...meta(total, page, limit) });
+    return ok(res, { count: list.length, payments: list, ...meta(total, page, limit) });
 });
 
 exports.initiateCashPayment = asyncHandler(async (req, res) => {
     const { orderId } = req.body;
-    const order = await Order.findById(orderId).populate('table');
+    const order = await orders.populateById(orderId);
     if (!order) throw ApiError.notFound('Order not found');
     if (!isOrderAccessible(req, order)) throw ApiError.forbidden();
     if (order.status === 'cancelled') throw ApiError.badRequest('Order is cancelled');
@@ -152,36 +167,30 @@ exports.initiateCashPayment = asyncHandler(async (req, res) => {
 
     // Reuse a pending payment if one already exists for this order (e.g. the
     // diner pre-selected cash at order time) so we don't leave an orphan behind.
-    let payment = await Payment.findOne({ order: order._id, status: 'pending' });
-    if (payment) {
-        payment.method = 'cash';
-        payment.amount = order.totalAmount;
-        await payment.save();
-    } else {
-        payment = await Payment.create({
-            order: order._id,
-            restaurant: order.restaurant,
-            amount: order.totalAmount,
-            method: 'cash',
-            status: 'pending',
-        });
-    }
-    order.paymentStatus = 'unpaid';
-    order.paymentMethod = 'cash';
-    await order.save();
+    const pending = await payments.findOne({ orderId: order._id, status: 'pending' });
+    const payment = pending
+        ? await payments.update(pending.id, { method: 'cash', amount: order.totalAmount })
+        : await payments.create({
+              order: order._id,
+              restaurant: toId(order.restaurant),
+              amount: order.totalAmount,
+              method: 'cash',
+              status: 'pending',
+          });
+    await orders.update(order._id, { payment_status: 'unpaid', payment_method: 'cash' });
 
-    getIO()?.to(`restaurant_${toId(order.restaurant)}`).emit('cashPaymentRequested', {
-        order,
+    getIO().to(`restaurant_${toId(order.restaurant)}`).emit('cashPaymentRequested', {
+        order: { ...order, paymentStatus: 'unpaid', paymentMethod: 'cash' },
         table: order.table,
     });
 
-    return ok(res, { payment }, 'Cash payment requested');
+    return ok(res, { payment: toPayment(payment) }, 'Cash payment requested');
 });
 
 exports.initiateCardPayment = asyncHandler(async (req, res) => {
     if (!stripe) throw ApiError.badRequest('Card payments are not configured');
     const { orderId } = req.body;
-    const order = await Order.findById(orderId);
+    const order = await orders.findById(orderId);
     if (!order) throw ApiError.notFound('Order not found');
     if (!isOrderAccessible(req, order)) throw ApiError.forbidden();
     if (order.status === 'cancelled') throw ApiError.badRequest('Order is cancelled');
@@ -189,12 +198,9 @@ exports.initiateCardPayment = asyncHandler(async (req, res) => {
 
     // Reuse the pending card payment when the amount hasn't changed, so repeated
     // taps (or refreshes) don't pile up orphan PaymentIntents.
-    let payment = await Payment.findOne({ order: order._id, method: 'card', status: 'pending' });
-    if (
-        payment?.stripeClientSecret &&
-        Number(payment.amount) === Number(order.totalAmount)
-    ) {
-        return ok(res, { clientSecret: payment.stripeClientSecret, paymentId: payment._id });
+    const pending = await payments.findOne({ orderId: order._id, method: 'card', status: 'pending' });
+    if (pending?.stripeClientSecret && Number(pending.amount) === Number(order.totalAmount)) {
+        return ok(res, { clientSecret: pending.stripeClientSecret, paymentId: pending.id });
     }
 
     const amountInCents = Math.round(order.totalAmount * 100);
@@ -202,27 +208,25 @@ exports.initiateCardPayment = asyncHandler(async (req, res) => {
         amount: amountInCents,
         currency: config.stripe.currency,
         automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
-        metadata: { orderId: order._id.toString() },
+        metadata: { orderId: String(order._id) },
     });
 
-    if (payment) {
-        payment.amount = order.totalAmount;
-        payment.stripePaymentIntentId = paymentIntent.id;
-        payment.stripeClientSecret = paymentIntent.client_secret;
-        await payment.save();
-    } else {
-        payment = await Payment.create({
-            order: order._id,
-            restaurant: order.restaurant,
-            amount: order.totalAmount,
-            method: 'card',
-            status: 'pending',
-            stripePaymentIntentId: paymentIntent.id,
-            stripeClientSecret: paymentIntent.client_secret,
-        });
-    }
+    const intentFields = {
+        amount: order.totalAmount,
+        stripePaymentIntentId: paymentIntent.id,
+        stripeClientSecret: paymentIntent.client_secret,
+    };
+    const payment = pending
+        ? await payments.update(pending.id, intentFields)
+        : await payments.create({
+              order: order._id,
+              restaurant: toId(order.restaurant),
+              method: 'card',
+              status: 'pending',
+              ...intentFields,
+          });
 
-    return ok(res, { clientSecret: payment.stripeClientSecret, paymentId: payment._id });
+    return ok(res, { clientSecret: payment.stripeClientSecret, paymentId: payment.id });
 });
 
 exports.confirmCardPayment = asyncHandler(async (req, res) => {
@@ -233,51 +237,33 @@ exports.confirmCardPayment = asyncHandler(async (req, res) => {
         throw ApiError.badRequest('Payment not successful yet');
     }
 
-    const restaurantScope = getRestaurantScope(req);
-    const paymentFilter = restaurantScope
-        ? { stripePaymentIntentId: paymentIntentId, restaurant: restaurantScope }
-        : { stripePaymentIntentId: paymentIntentId };
-
-    const payment = await Payment.findOne(paymentFilter);
+    const payment = await payments.findOne({
+        stripePaymentIntentId: paymentIntentId,
+        restaurantId: getRestaurantScope(req),
+    });
     if (!payment) throw ApiError.notFound('Payment record not found');
 
-    payment.status = 'completed';
-    payment.paidAt = Date.now();
-    await payment.save();
+    // The webhook may have settled it already; only the first settle notifies.
+    const completed = await payments.completeOnce(payment.id);
+    if (completed) await settleOrder(completed, { method: 'card' });
 
-    const order = await Order.findById(payment.order);
-    if (order) {
-        order.paymentStatus = 'paid';
-        order.paymentMethod = 'card';
-        await order.save();
-        getIO()?.to(`restaurant_${toId(order.restaurant)}`).emit('paymentCompleted', { order, payment });
-    }
-
-    return ok(res, { payment: { ...payment.toObject(), stripeClientSecret: undefined } }, 'Payment completed');
+    const fresh = completed || (await payments.findOne({ id: payment.id }));
+    return ok(res, { payment: toPayment(fresh) }, 'Payment completed');
 });
 
 exports.confirmCashPayment = asyncHandler(async (req, res) => {
     const { paymentId } = req.body;
-    const restaurantScope = getRestaurantScope(req);
-    const paymentFilter = restaurantScope
-        ? { _id: paymentId, restaurant: restaurantScope }
-        : { _id: paymentId };
-
-    const payment = await Payment.findOne(paymentFilter);
+    const payment = await payments.findOne({
+        id: paymentId,
+        restaurantId: getRestaurantScope(req),
+    });
     if (!payment) throw ApiError.notFound('Payment not found');
 
-    payment.status = 'completed';
-    payment.paidAt = Date.now();
-    await payment.save();
+    const completed = await payments.completeOnce(payment.id);
+    if (completed) await settleOrder(completed);
 
-    const order = await Order.findById(payment.order);
-    if (order) {
-        order.paymentStatus = 'paid';
-        await order.save();
-        getIO()?.to(`restaurant_${toId(order.restaurant)}`).emit('paymentCompleted', { order, payment });
-    }
-
-    return ok(res, { payment: { ...payment.toObject(), stripeClientSecret: undefined } }, 'Payment completed');
+    const fresh = completed || (await payments.findOne({ id: payment.id }));
+    return ok(res, { payment: toPayment(fresh) }, 'Payment completed');
 });
 
 // @desc   Stripe webhook — the reliable, async source of truth for card payments
@@ -304,25 +290,11 @@ exports.handleStripeWebhook = async (req, res) => {
     try {
         if (event.type === 'payment_intent.succeeded') {
             const intent = event.data.object;
-            const payment = await Payment.findOne({ stripePaymentIntentId: intent.id });
-            if (payment && payment.status !== 'completed') {
-                payment.status = 'completed';
-                payment.paidAt = Date.now();
-                await payment.save();
-
-                const order = await Order.findById(payment.order);
-                if (order) {
-                    order.paymentStatus = 'paid';
-                    order.paymentMethod = 'card';
-                    await order.save();
-                    getIO()?.to(`restaurant_${toId(order.restaurant)}`).emit('paymentCompleted', { order, payment });
-                }
-            }
+            const payment = await payments.findOne({ stripePaymentIntentId: intent.id });
+            const completed = payment ? await payments.completeOnce(payment.id) : null;
+            if (completed) await settleOrder(completed, { method: 'card' });
         } else if (event.type === 'payment_intent.payment_failed') {
-            await Payment.updateOne(
-                { stripePaymentIntentId: event.data.object.id },
-                { $set: { status: 'failed' } }
-            );
+            await payments.markFailedByIntent(event.data.object.id);
         }
 
         return res.status(200).json({ received: true });
@@ -332,24 +304,19 @@ exports.handleStripeWebhook = async (req, res) => {
 };
 
 exports.getPaymentByOrder = asyncHandler(async (req, res) => {
-    const restaurantScope = getRestaurantScope(req);
-    const paymentFilter = restaurantScope
-        ? { order: req.params.orderId, restaurant: restaurantScope }
-        : { order: req.params.orderId };
-
-    const payment = await Payment.findOne(paymentFilter).select('-stripeClientSecret');
+    const payment = await payments.findOne({
+        orderId: req.params.orderId,
+        restaurantId: getRestaurantScope(req),
+    });
     if (!payment) throw ApiError.notFound('Payment not found for this order');
-    return ok(res, { payment });
+    return ok(res, { payment: toPayment(payment) });
 });
 
 exports.exportPaymentReceiptPdf = async (req, res) => {
     try {
         const { orderId } = req.params;
 
-        const order = await Order.findById(orderId)
-            .populate('table', 'number')
-            .populate('restaurant', 'name address phone settings')
-            .populate('items.menuItem');
+        const order = await orders.populateById(orderId);
 
         if (!order) {
             return res.status(404).json({ success: false, message: 'Order not found' });
@@ -360,14 +327,11 @@ exports.exportPaymentReceiptPdf = async (req, res) => {
         }
 
         const orderPaymentStatus = String(order.paymentStatus || '').toLowerCase();
-        const restaurantScope = getRestaurantScope(req);
-        const completedPaymentFilter = restaurantScope
-            ? { order: order._id, restaurant: restaurantScope, status: 'completed' }
-            : { order: order._id, status: 'completed' };
-
-        const completedPayment = await Payment.findOne(completedPaymentFilter)
-            .select('_id')
-            .lean();
+        const completedPayment = await payments.findOne({
+            orderId: order._id,
+            restaurantId: getRestaurantScope(req),
+            status: 'completed',
+        });
 
         const canExportReceipt = orderPaymentStatus === 'paid' || Boolean(completedPayment);
 
@@ -379,8 +343,7 @@ exports.exportPaymentReceiptPdf = async (req, res) => {
         }
 
         if (orderPaymentStatus !== 'paid' && completedPayment) {
-            order.paymentStatus = 'paid';
-            await order.save();
+            await orders.update(order._id, { payment_status: 'paid' });
         }
 
         const thermalWidth = 226.77; // ~80mm in points

@@ -1,6 +1,5 @@
-const Category = require('../models/Category');
-const MenuItem = require('../models/MenuItem');
-const cloudinary = require('../config/cloudinary');
+const menu = require('../db/menu');
+const { deleteByPublicUrl } = require('../services/storageService');
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 const { ok, created } = require('../utils/apiResponse');
@@ -33,6 +32,32 @@ const parseNumber = (value) => {
   return Number.isNaN(parsed) ? undefined : parsed;
 };
 
+const parseAllergens = (value) => {
+  const parsed = parseMaybeJson(value);
+  if (parsed === undefined || parsed === null || parsed === '') return undefined;
+  const list = Array.isArray(parsed) ? parsed : String(parsed).split(',');
+  return list.map((a) => String(a).trim()).filter(Boolean);
+};
+
+const I18N_KEYS = ['ar', 'fr', 'en'];
+// Category/item names are trilingual; a missing translation falls back to French.
+const parseI18n = (value, { required }) => {
+  const parsed = parseMaybeJson(value);
+  if (parsed === undefined || parsed === null || parsed === '') return undefined;
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw ApiError.badRequest('Names must be an object with ar, fr and en');
+  }
+  const out = {};
+  for (const key of I18N_KEYS) {
+    if (parsed[key] !== undefined && parsed[key] !== null) out[key] = String(parsed[key]);
+  }
+  if (required) {
+    if (!out.fr) throw ApiError.badRequest('French name is required');
+    for (const key of I18N_KEYS) if (!out[key]) out[key] = out.fr;
+  }
+  return out;
+};
+
 // Public reads resolve the restaurant from the request; writes resolve it from
 // the authenticated manager (so a manager can only write to their own restaurant).
 // Falls back to the authenticated user's restaurant so managers don't need to
@@ -50,31 +75,10 @@ const getWriteRestaurantId = (req) => {
   return toId(req.user?.restaurant);
 };
 
-const extractCloudinaryPublicId = (urlValue) => {
-  try {
-    const parsed = new URL(String(urlValue || ''));
-    const marker = '/upload/';
-    const idx = parsed.pathname.indexOf(marker);
-    if (idx === -1) return null;
-
-    let pathAfter = parsed.pathname.slice(idx + marker.length).replace(/^v\d+\//, '');
-    if (!pathAfter) return null;
-
-    const lastDot = pathAfter.lastIndexOf('.');
-    if (lastDot > 0) pathAfter = pathAfter.slice(0, lastDot);
-    return pathAfter || null;
-  } catch {
-    return null;
-  }
-};
-
-const deleteCloudinaryImage = async (imageUrl) => {
-  const publicId = extractCloudinaryPublicId(imageUrl);
-  if (!publicId) return;
-  try {
-    await cloudinary.uploader.destroy(publicId, { resource_type: 'image' });
-  } catch {
-    // Ignore cleanup failures so they don't block core CRUD.
+const requireOwnCategory = async (categoryId, restaurantId) => {
+  const category = await menu.findCategoryById(categoryId);
+  if (!category || toId(category.restaurant) !== toId(restaurantId)) {
+    throw ApiError.badRequest('Invalid category for this restaurant');
   }
 };
 
@@ -82,15 +86,15 @@ const deleteCloudinaryImage = async (imageUrl) => {
 
 exports.createCategory = asyncHandler(async (req, res) => {
   const { name, image, order } = req.body;
-  const parsedName = parseMaybeJson(name);
+  const parsedName = parseI18n(name, { required: true });
   const restaurant = getWriteRestaurantId(req);
 
   if (!parsedName) throw ApiError.badRequest('Please provide category name');
   if (!restaurant) throw ApiError.badRequest('Restaurant context is required');
 
-  const category = await Category.create({
+  const category = await menu.createCategory({
     name: parsedName,
-    restaurant,
+    restaurantId: restaurant,
     image,
     order: parseNumber(order),
   });
@@ -107,9 +111,7 @@ exports.getCategories = asyncHandler(async (req, res) => {
   const cached = cache.get(key);
   if (cached) return ok(res, cached);
 
-  const categories = await Category.find({ restaurant: restaurantId, isActive: true }).sort({
-    order: 1,
-  });
+  const categories = await menu.listActiveCategories(restaurantId);
   const payload = { count: categories.length, categories };
   cache.set(key, payload);
   return ok(res, payload);
@@ -117,28 +119,28 @@ exports.getCategories = asyncHandler(async (req, res) => {
 
 exports.updateCategory = asyncHandler(async (req, res) => {
   const { name, image, order, isActive } = req.body;
-  const category = await Category.findById(req.params.id);
+  const category = await menu.findCategoryById(req.params.id);
   if (!category) throw ApiError.notFound('Category not found');
   if (!isSameRestaurant(req.user, category.restaurant)) throw ApiError.forbidden();
 
-  const parsedName = parseMaybeJson(name);
-  const parsedOrder = parseNumber(order);
-  if (parsedName) category.name = parsedName;
-  if (image) category.image = image;
-  if (parsedOrder !== undefined) category.order = parsedOrder;
-  if (isActive !== undefined) category.isActive = parseBoolean(isActive);
+  const parsedName = parseI18n(name, { required: false });
+  const updated = await menu.updateCategory(category._id, {
+    name: parsedName ? { ...category.name, ...parsedName } : undefined,
+    image: image || undefined,
+    order: parseNumber(order),
+    isActive: parseBoolean(isActive),
+  });
 
-  await category.save();
   bustMenuCache(category.restaurant);
-  return ok(res, { category }, 'Category updated');
+  return ok(res, { category: updated }, 'Category updated');
 });
 
 exports.deleteCategory = asyncHandler(async (req, res) => {
-  const category = await Category.findById(req.params.id);
+  const category = await menu.findCategoryById(req.params.id);
   if (!category) throw ApiError.notFound('Category not found');
   if (!isSameRestaurant(req.user, category.restaurant)) throw ApiError.forbidden();
 
-  await category.deleteOne();
+  await menu.deleteCategory(category._id);
   bustMenuCache(category.restaurant);
   return ok(res, null, 'Category deleted successfully');
 });
@@ -160,23 +162,24 @@ exports.createMenuItem = asyncHandler(async (req, res) => {
   } = req.body;
 
   const restaurant = getWriteRestaurantId(req);
-  const parsedName = parseMaybeJson(name);
+  const parsedName = parseI18n(name, { required: true });
   const parsedPrice = parseNumber(price);
 
   if (!parsedName || parsedPrice === undefined || !category || !restaurant) {
     throw ApiError.badRequest('Please provide required fields: name, price, category');
   }
+  await requireOwnCategory(category, restaurant);
 
-  const menuItem = await MenuItem.create({
+  const menuItem = await menu.createItem({
     name: parsedName,
-    description: parseMaybeJson(description),
+    description: parseI18n(description, { required: false }),
     price: parsedPrice,
     category,
     restaurant,
-    image: req.file?.cloudinaryUrl || image,
+    image: req.file?.publicUrl || image || undefined,
     isVegetarian: parseBoolean(isVegetarian),
     isGlutenFree: parseBoolean(isGlutenFree),
-    allergens: parseMaybeJson(allergens),
+    allergens: parseAllergens(allergens),
     preparationTime: parseNumber(preparationTime),
     prepStation: prepStation === 'bar' ? 'bar' : 'kitchen',
   });
@@ -194,23 +197,20 @@ exports.getMenuItems = asyncHandler(async (req, res) => {
   const cached = cache.get(key);
   if (cached) return ok(res, cached);
 
-  const filter = { restaurant: restaurantId };
-  if (categoryId) filter.category = categoryId;
-  if (isAvailable !== undefined) filter.isAvailable = isAvailable === 'true';
-
-  // Only populate the category — the full restaurant doc isn't needed per item
-  // (currency/name come from context), and populating it on every item is a
-  // needless DB hit + payload bloat on the menu's hottest read path.
-  const menuItems = await MenuItem.find(filter).populate('category');
+  // Only the category is populated — currency/name come from context, and the
+  // menu is the hottest read path.
+  const menuItems = await menu.listItems({
+    restaurantId,
+    categoryId: categoryId || undefined,
+    isAvailable: isAvailable !== undefined ? isAvailable === 'true' : undefined,
+  });
   const payload = { count: menuItems.length, menuItems };
   cache.set(key, payload);
   return ok(res, payload);
 });
 
 exports.getMenuItemById = asyncHandler(async (req, res) => {
-  const menuItem = await MenuItem.findById(req.params.id)
-    .populate('category')
-    .populate('restaurant');
+  const menuItem = await menu.findItemById(req.params.id, { populate: true });
   if (!menuItem) throw ApiError.notFound('Menu item not found');
   return ok(res, { menuItem });
 });
@@ -230,62 +230,57 @@ exports.updateMenuItem = asyncHandler(async (req, res) => {
     prepStation,
   } = req.body;
 
-  const menuItem = await MenuItem.findById(req.params.id);
+  const menuItem = await menu.findItemById(req.params.id);
   if (!menuItem) throw ApiError.notFound('Menu item not found');
   if (!isSameRestaurant(req.user, menuItem.restaurant)) throw ApiError.forbidden();
+  if (category) await requireOwnCategory(category, menuItem.restaurant);
 
-  const parsedName = parseMaybeJson(name);
-  const parsedDescription = parseMaybeJson(description);
-  const parsedPrice = parseNumber(price);
-  const parsedAvailable = parseBoolean(isAvailable);
-  const parsedVegetarian = parseBoolean(isVegetarian);
-  const parsedGlutenFree = parseBoolean(isGlutenFree);
-  const parsedAllergens = parseMaybeJson(allergens);
-  const parsedPrepTime = parseNumber(preparationTime);
-  const normalizedImage = req.file?.cloudinaryUrl || image;
+  const parsedName = parseI18n(name, { required: false });
+  const parsedDescription = parseI18n(description, { required: false });
+  const newImage = req.file?.publicUrl || image || undefined;
 
-  if (parsedName) menuItem.name = parsedName;
-  if (parsedDescription) menuItem.description = parsedDescription;
-  if (parsedPrice !== undefined) menuItem.price = parsedPrice;
-  if (category) menuItem.category = category;
-  if (normalizedImage) {
-    if (req.file?.cloudinaryUrl && menuItem.image && menuItem.image !== normalizedImage) {
-      await deleteCloudinaryImage(menuItem.image);
-    }
-    menuItem.image = normalizedImage;
+  const updated = await menu.updateItem(menuItem._id, {
+    name: parsedName ? { ...menuItem.name, ...parsedName } : undefined,
+    description: parsedDescription ? { ...(menuItem.description || {}), ...parsedDescription } : undefined,
+    price: parseNumber(price),
+    category: category || undefined,
+    image: newImage,
+    isAvailable: parseBoolean(isAvailable),
+    isVegetarian: parseBoolean(isVegetarian),
+    isGlutenFree: parseBoolean(isGlutenFree),
+    allergens: parseAllergens(allergens),
+    preparationTime: parseNumber(preparationTime),
+    prepStation: prepStation === 'kitchen' || prepStation === 'bar' ? prepStation : undefined,
+  });
+
+  // Replace the stored image only after the row points at the new one.
+  if (req.file?.publicUrl && menuItem.image && menuItem.image !== newImage) {
+    await deleteByPublicUrl(menuItem.image);
   }
-  if (parsedAvailable !== undefined) menuItem.isAvailable = parsedAvailable;
-  if (parsedVegetarian !== undefined) menuItem.isVegetarian = parsedVegetarian;
-  if (parsedGlutenFree !== undefined) menuItem.isGlutenFree = parsedGlutenFree;
-  if (parsedAllergens !== undefined) menuItem.allergens = parsedAllergens;
-  if (parsedPrepTime !== undefined) menuItem.preparationTime = parsedPrepTime;
-  if (prepStation === 'kitchen' || prepStation === 'bar') menuItem.prepStation = prepStation;
 
-  await menuItem.save();
   bustMenuCache(menuItem.restaurant);
-  return ok(res, { menuItem }, 'Menu item updated');
+  return ok(res, { menuItem: updated }, 'Menu item updated');
 });
 
 exports.deleteMenuItem = asyncHandler(async (req, res) => {
-  const menuItem = await MenuItem.findById(req.params.id);
+  const menuItem = await menu.findItemById(req.params.id);
   if (!menuItem) throw ApiError.notFound('Menu item not found');
   if (!isSameRestaurant(req.user, menuItem.restaurant)) throw ApiError.forbidden();
 
-  if (menuItem.image) await deleteCloudinaryImage(menuItem.image);
-  await menuItem.deleteOne();
+  await menu.deleteItem(menuItem._id);
+  if (menuItem.image) await deleteByPublicUrl(menuItem.image);
   bustMenuCache(menuItem.restaurant);
   return ok(res, null, 'Menu item deleted successfully');
 });
 
 exports.toggleAvailability = asyncHandler(async (req, res) => {
-  const menuItem = await MenuItem.findById(req.params.id);
+  const menuItem = await menu.findItemById(req.params.id);
   if (!menuItem) throw ApiError.notFound('Menu item not found');
   if (!isSameRestaurant(req.user, menuItem.restaurant)) throw ApiError.forbidden();
 
-  menuItem.isAvailable = !menuItem.isAvailable;
-  await menuItem.save();
+  const updated = await menu.toggleItemAvailability(menuItem._id);
   bustMenuCache(menuItem.restaurant);
-  return ok(res, { menuItem }, `Menu item ${menuItem.isAvailable ? 'enabled' : 'disabled'}`);
+  return ok(res, { menuItem: updated }, `Menu item ${updated.isAvailable ? 'enabled' : 'disabled'}`);
 });
 
 /* -------------------------- Recommendations --------------------------- */

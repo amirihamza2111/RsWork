@@ -1,4 +1,5 @@
 // Shared helpers for multi-tenant (per-restaurant) scoping and id comparison.
+const ApiError = require('./ApiError');
 
 const toId = (value) => {
   if (!value) return '';
@@ -15,9 +16,23 @@ const getRestaurantScope = (user) => {
 };
 
 const isSameRestaurant = (user, restaurantValue) => {
+  if (!user) return false;
+  if (user.role === 'superadmin') return true;
   const scope = getRestaurantScope(user);
-  if (!scope) return true; // superadmin or unscoped
+  // Clients aren't tenant-bound (their access is checked by ownership); staff
+  // without a restaurant (e.g. theirs was deleted) match nothing.
+  if (!scope) return user.role === 'client';
   return scope === toId(restaurantValue);
 };
 
-module.exports = { toId, getRestaurantScope, isSameRestaurant };
+// Restaurant filter for staff queries: undefined (= unscoped) for superadmin and
+// for non-staff callers (anonymous diners, clients — their access is checked by
+// ownership/route guards); throws for staff that lost their restaurant.
+const requireStaffScope = (user) => {
+  if (!user || user.role === 'superadmin' || user.role === 'client') return undefined;
+  const scope = getRestaurantScope(user);
+  if (!scope) throw ApiError.forbidden('Restaurant context is required');
+  return scope;
+};
+
+module.exports = { toId, getRestaurantScope, isSameRestaurant, requireStaffScope };

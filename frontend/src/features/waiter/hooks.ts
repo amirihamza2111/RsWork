@@ -1,7 +1,11 @@
 import { useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { getSocket } from '@/lib/socket'
+import { restaurantTopic, subscribe } from '@/lib/realtime'
+
+// The waiter board reports presence so tables are auto-assigned among the
+// waiters actually on the floor (the API treats ~2 min of silence as offline).
+const PRESENCE_INTERVAL_MS = 60_000
 
 export interface WaiterItem {
   _id: string
@@ -79,18 +83,18 @@ export function useWaiterRealtime(restaurantId?: string) {
   const qc = useQueryClient()
   useEffect(() => {
     if (!restaurantId) return
-    const s = getSocket()
-    const join = () => s.emit('joinRestaurant', restaurantId)
-    join()
-    s.on('connect', join)
-    const refresh = () => {
+    const unsubscribe = subscribe(restaurantTopic(restaurantId), WAITER_EVENTS, () => {
       qc.invalidateQueries({ queryKey: ['orders', 'waiter'] })
       qc.invalidateQueries({ queryKey: ['waiter', 'tables'] })
-    }
-    WAITER_EVENTS.forEach((e) => s.on(e, refresh))
+    })
+
+    const beat = () => void api.post('/api/tables/presence').catch(() => {})
+    beat()
+    const timer = window.setInterval(beat, PRESENCE_INTERVAL_MS)
     return () => {
-      s.off('connect', join)
-      WAITER_EVENTS.forEach((e) => s.off(e, refresh))
+      unsubscribe()
+      window.clearInterval(timer)
+      void api.delete('/api/tables/presence').catch(() => {})
     }
   }, [restaurantId, qc])
 }

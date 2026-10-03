@@ -6,11 +6,6 @@ exports.registerValidator = [
   body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
 ];
 
-exports.loginValidator = [
-  body('email').trim().isEmail().withMessage('Please provide a valid email'),
-  body('password').notEmpty().withMessage('Password is required'),
-];
-
 exports.registerRestaurantValidator = [
   body('restaurantName').trim().notEmpty().withMessage('Restaurant name is required'),
   body('name').trim().notEmpty().withMessage('Manager name is required'),
@@ -23,10 +18,10 @@ exports.createOrderValidator = [
   body('table')
     .notEmpty()
     .withMessage('Table ID is required')
-    .isMongoId()
+    .isUUID()
     .withMessage('Invalid table ID'),
   body('items').isArray({ min: 1 }).withMessage('Items array is required and must not be empty'),
-  body('items.*.menuItem').isMongoId().withMessage('Each item needs a valid menuItem ID'),
+  body('items.*.menuItem').isUUID().withMessage('Each item needs a valid menuItem ID'),
   body('items.*.quantity')
     .optional()
     .isInt({ min: 1 })
@@ -43,7 +38,7 @@ exports.createMenuItemValidator = [
   body('category')
     .notEmpty()
     .withMessage('Category is required')
-    .isMongoId()
+    .isUUID()
     .withMessage('Invalid category ID'),
   body('prepStation')
     .optional()

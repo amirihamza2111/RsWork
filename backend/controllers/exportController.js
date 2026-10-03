@@ -1,11 +1,12 @@
-const mongoose = require('mongoose');
 const PDFDocument = require('pdfkit');
-const Order = require('../models/Order');
-const Restaurant = require('../models/Restaurant');
-const getRestaurantObjectId = (req) => {
-  const r = req.user?.restaurant;
-  if (!r) return null;
-  return r instanceof mongoose.Types.ObjectId ? r : new mongoose.Types.ObjectId(r);
+const orders = require('../db/orders');
+const restaurants = require('../db/restaurants');
+const { isUuid } = require('../db/mappers');
+const { toId } = require('../utils/scope');
+
+const getRestaurantId = (req) => {
+  const id = toId(req.user?.restaurant);
+  return isUuid(id) ? id : null;
 };
 const parseRange = (startDate, endDate) => {
   const now = new Date();
@@ -38,16 +39,8 @@ const parseRange = (startDate, endDate) => {
   if (start > end) return null;
   return { start, end };
 };
-const fetchOrdersForExport = async (restaurantId, start, end) => {
-  return Order.find({
-    restaurant: restaurantId,
-    createdAt: { $gte: start, $lte: end },
-  })
-    .populate('restaurant', 'name')
-    .populate('table', 'number')
-    .sort({ createdAt: 1 })
-    .lean();
-};
+const fetchOrdersForExport = (restaurantId, start, end) =>
+  orders.list({ restaurantId, from: start, to: end }, { sort: 'asc' });
 const formatDateTime = (d) => {
   if (!d) return '';
   return new Date(d).toLocaleString();
@@ -69,7 +62,7 @@ const resolveRestaurantNameForPdf = (rawName) => {
 
 exports.exportOrdersPDF = async (req, res) => {
   try {
-    const restaurantId = getRestaurantObjectId(req);
+    const restaurantId = getRestaurantId(req);
     if (!restaurantId) {
       return res.status(403).json({
         success: false,
@@ -89,7 +82,7 @@ exports.exportOrdersPDF = async (req, res) => {
     if (orders.length > 0 && orders[0].restaurant?.name) {
       restaurantName = orders[0].restaurant.name;
     } else {
-      const r = await Restaurant.findById(restaurantId).select('name').lean();
+      const r = await restaurants.findById(restaurantId);
       if (r?.name) restaurantName = r.name;
     }
     const safeRestaurantName = resolveRestaurantNameForPdf(restaurantName);

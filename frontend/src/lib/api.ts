@@ -1,14 +1,9 @@
 import axios, { AxiosError } from 'axios'
+import { supabase } from './supabase'
 
-const TOKEN_KEY = 'rswork_token'
 const RESTAURANT_KEY = 'rswork_restaurant'
 
-export const getToken = () => localStorage.getItem(TOKEN_KEY) || ''
-export const setToken = (token: string) => localStorage.setItem(TOKEN_KEY, token)
-export const clearToken = () => {
-  localStorage.removeItem(TOKEN_KEY)
-  localStorage.removeItem(RESTAURANT_KEY)
-}
+export const clearRestaurantSelection = () => localStorage.removeItem(RESTAURANT_KEY)
 
 // Multi-restaurant switch: which restaurant the owner is currently managing.
 // Sent as X-Restaurant-Id on every request; the backend validates ownership.
@@ -19,18 +14,19 @@ export const setSelectedRestaurant = (id: string) => {
 }
 
 // Axios instance pointed at the RsWork backend. The base URL comes from
-// VITE_API_URL (fallback: localhost:8001). Every request auto-attaches the
-// Bearer token if one is stored, and responses are unwrapped from the
+// VITE_API_URL (fallback: localhost:5000). Every request auto-attaches the
+// Supabase access token when signed in (refreshed automatically by the
+// Supabase client), and responses are unwrapped from the
 // `{ success, message, data }` envelope so callers can work with `data` directly.
-const resolvedBaseURL = import.meta.env.VITE_API_URL || 'http://localhost:8001'
-console.debug('[API Client] Resolved base URL:', resolvedBaseURL)
+const resolvedBaseURL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
 const client = axios.create({
   baseURL: resolvedBaseURL,
   headers: { 'Content-Type': 'application/json' },
 })
 
-client.interceptors.request.use((config) => {
-  const token = getToken()
+client.interceptors.request.use(async (config) => {
+  const { data } = await supabase.auth.getSession()
+  const token = data.session?.access_token
   if (token) config.headers.Authorization = `Bearer ${token}`
   const restaurant = getSelectedRestaurant()
   if (restaurant) config.headers['X-Restaurant-Id'] = restaurant

@@ -1,8 +1,7 @@
-const jwt = require('jsonwebtoken');
-const mongoose = require('mongoose');
-const User = require('../models/User');
-const Restaurant = require('../models/Restaurant');
-const config = require('../config');
+const { supabaseAdmin } = require('../config/supabase');
+const profiles = require('../db/profiles');
+const restaurants = require('../db/restaurants');
+const { isUuid } = require('../db/mappers');
 const asyncHandler = require('../utils/asyncHandler');
 const ApiError = require('../utils/ApiError');
 
@@ -13,51 +12,41 @@ const ApiError = require('../utils/ApiError');
 const applyRestaurantSwitch = async (req, user) => {
   const selected = req.headers['x-restaurant-id'];
   if (!selected || !user) return;
-  if (!mongoose.isValidObjectId(selected)) return;
+  if (!isUuid(selected)) return;
   if (String(user.restaurant || '') === String(selected)) return;
 
   if (user.role === 'superadmin') {
     user.restaurant = selected;
     return;
   }
-  if (user.role === 'manager') {
-    // A manager may only switch to a restaurant they own.
-    const owned = await Restaurant.exists({ _id: selected, owner: user._id });
-    if (owned) user.restaurant = selected;
+  if (user.role === 'manager' && (await restaurants.isOwnedBy(selected, user._id))) {
+    user.restaurant = selected;
   }
 };
 
+const bearerToken = (req) => {
+  const header = req.headers.authorization || '';
+  return header.startsWith('Bearer ') ? header.slice(7).trim() : null;
+};
+
+// Verifies a Supabase access token (JWKS, cached) and loads the app profile.
+const resolveUser = async (token) => {
+  const { data, error } = await supabaseAdmin.auth.getClaims(token);
+  if (error || !data?.claims?.sub) return { error: 'Invalid or expired session' };
+  const user = await profiles.findById(data.claims.sub);
+  if (!user) return { error: 'User not found' };
+  if (!user.isActive) return { error: 'Account is deactivated' };
+  return { user };
+};
+
 exports.protect = asyncHandler(async (req, res, next) => {
-  let token;
-  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-    token = req.headers.authorization.split(' ')[1];
-  }
+  const token = bearerToken(req);
+  if (!token) throw ApiError.unauthorized('Not authorized to access this route');
 
-  if (!token) {
-    throw ApiError.unauthorized('Not authorized to access this route');
-  }
-
-  const decoded = jwt.verify(token, config.jwt.secret, { algorithms: ['HS256'] });
-  const user = await User.findById(decoded.id).select('+passwordChangedAt');
-
-  if (!user) {
-    throw ApiError.unauthorized('User not found');
-  }
-
-  if (!user.isActive) {
-    throw ApiError.unauthorized('Account is deactivated');
-  }
-
-  // Reject tokens issued before the user's most recent password change.
-  if (user.passwordChangedAt) {
-    const changedAtSec = Math.floor(new Date(user.passwordChangedAt).getTime() / 1000);
-    if (decoded.iat && changedAtSec > decoded.iat) {
-      throw ApiError.unauthorized('Session expired, please log in again');
-    }
-  }
+  const { user, error } = await resolveUser(token);
+  if (error) throw ApiError.unauthorized(error);
 
   await applyRestaurantSwitch(req, user);
-
   req.user = user;
   next();
 });
@@ -66,28 +55,17 @@ exports.protect = asyncHandler(async (req, res, next) => {
 // Used by public routes (QR order placement, order tracking) that still want to
 // know the caller when they happen to be logged in.
 exports.optionalAuth = asyncHandler(async (req, res, next) => {
-  let token;
-  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-    token = req.headers.authorization.split(' ')[1];
-  }
-
+  const token = bearerToken(req);
   if (!token) return next();
-
   try {
-    const decoded = jwt.verify(token, config.jwt.secret, { algorithms: ['HS256'] });
-    const user = await User.findById(decoded.id).select('+passwordChangedAt');
-    if (user && user.isActive) {
-      const changedAtSec = user.passwordChangedAt
-        ? Math.floor(new Date(user.passwordChangedAt).getTime() / 1000)
-        : 0;
-      if (!decoded.iat || changedAtSec <= decoded.iat) {
-        req.user = user;
-      }
+    const { user } = await resolveUser(token);
+    if (user) {
+      await applyRestaurantSwitch(req, user);
+      req.user = user;
     }
   } catch {
     // Ignore invalid tokens for optional auth.
   }
-
   next();
 });
 

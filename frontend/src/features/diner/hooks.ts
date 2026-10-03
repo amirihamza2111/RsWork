@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { getSocket } from '@/lib/socket'
+import { subscribe, tableTopic } from '@/lib/realtime'
 
 type Trilingual = { fr?: string; en?: string; ar?: string } | string
 
@@ -139,7 +139,7 @@ export function useConfirmCardPayment() {
   })
 }
 
-// Live order tracking: fetch once, then refresh on socket events for the table.
+// Live order tracking: fetch once, then refresh on realtime events for the table.
 export function useTrackedOrder(orderId?: string) {
   const qc = useQueryClient()
   const query = useQuery({
@@ -152,13 +152,11 @@ export function useTrackedOrder(orderId?: string) {
 
   const tableId = query.data?.table?._id
   useEffect(() => {
-    if (!orderId) return
-    const s = getSocket()
-    const refresh = () => qc.invalidateQueries({ queryKey: ['diner', 'order', orderId] })
+    if (!orderId || !tableId) return
     const events = ['order_updated', 'order_ready', 'order_confirmed', 'orderStatusUpdated', 'kds_updated']
-    events.forEach((e) => s.on(e, refresh))
-    if (tableId) s.emit('joinTable', tableId)
-    return () => events.forEach((e) => s.off(e, refresh))
+    return subscribe(tableTopic(tableId), events, () =>
+      qc.invalidateQueries({ queryKey: ['diner', 'order', orderId] })
+    )
   }, [orderId, tableId, qc])
 
   return query

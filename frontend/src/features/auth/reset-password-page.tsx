@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent } from '@/components/ui/card'
 import { PasswordInput } from '@/components/ui/password-input'
-import { api, type ApiError } from '@/lib/api'
+import { supabase } from '@/lib/supabase'
 
 export function ResetPasswordPage() {
   const [params] = useSearchParams()
@@ -25,11 +25,17 @@ export function ResetPasswordPage() {
     if (password !== confirm) return setError('Passwords do not match.')
     setSubmitting(true)
     try {
-      await api.post('/api/auth/reset-password', { token, newPassword: password })
+      // The emailed link carries a one-time recovery token: exchanging it opens a
+      // short-lived session that is allowed to set the new password.
+      const verified = await supabase.auth.verifyOtp({ token_hash: token, type: 'recovery' })
+      if (verified.error) throw new Error('This reset link is invalid or has expired.')
+      const updated = await supabase.auth.updateUser({ password })
+      if (updated.error) throw new Error(updated.error.message)
+      await supabase.auth.signOut()
       setDone(true)
       setTimeout(() => navigate('/login', { replace: true }), 2500)
     } catch (err) {
-      setError((err as ApiError).message)
+      setError((err as Error).message)
     } finally {
       setSubmitting(false)
     }

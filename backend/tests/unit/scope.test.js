@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { toId, getRestaurantScope, isSameRestaurant } = require('../../utils/scope');
+const { toId, getRestaurantScope, isSameRestaurant, requireStaffScope } = require('../../utils/scope');
 
 test('toId: handles strings, objects with _id, and falsy values', () => {
   assert.equal(toId('abc'), 'abc');
@@ -20,6 +20,20 @@ test('getRestaurantScope: scoped roles return their restaurant id', () => {
 
 test('isSameRestaurant: superadmin matches any restaurant', () => {
   assert.ok(isSameRestaurant({ role: 'superadmin' }, 'anything'));
+});
+
+test('isSameRestaurant: staff without a restaurant match nothing; clients are not tenant-bound', () => {
+  assert.ok(!isSameRestaurant({ role: 'manager' }, 'r1'));
+  assert.ok(!isSameRestaurant({ role: 'waiter', restaurant: null }, 'r1'));
+  assert.ok(isSameRestaurant({ role: 'client' }, 'r1'));
+  assert.ok(!isSameRestaurant(null, 'r1'));
+});
+
+test('requireStaffScope: superadmin/anonymous unscoped, staff scoped, orphaned staff rejected', () => {
+  assert.equal(requireStaffScope({ role: 'superadmin' }), undefined);
+  assert.equal(requireStaffScope(undefined), undefined);
+  assert.equal(requireStaffScope({ role: 'cashier', restaurant: 'r1' }), 'r1');
+  assert.throws(() => requireStaffScope({ role: 'manager' }), /Restaurant context/);
 });
 
 test('isSameRestaurant: scoped user matches only its own restaurant', () => {

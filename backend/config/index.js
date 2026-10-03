@@ -7,7 +7,7 @@ const nodeEnv = process.env.NODE_ENV || 'development';
 dotenv.config({ path: path.resolve(__dirname, `../.env.${nodeEnv}.local`) });
 dotenv.config();
 
-const REQUIRED = ['DB_URI', 'JWT_SECRET'];
+const REQUIRED = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_DB_URL'];
 const missing = REQUIRED.filter((key) => !process.env[key]);
 if (missing.length > 0) {
   console.error(`❌ Missing required environment variables: ${missing.join(', ')}`);
@@ -25,10 +25,11 @@ const config = {
   isProd: nodeEnv === 'production',
   isDev: nodeEnv === 'development',
   port: Number(process.env.PORT) || 5000,
-  dbUri: process.env.DB_URI,
-  jwt: {
-    secret: process.env.JWT_SECRET,
-    expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+  supabase: {
+    url: String(process.env.SUPABASE_URL).replace(/\/+$/, ''),
+    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    dbUrl: process.env.SUPABASE_DB_URL,
+    storageBucket: process.env.SUPABASE_STORAGE_BUCKET || 'menu-images',
   },
   // Explicit CORS allowlist. Vercel preview domains are opt-in via env.
   cors: {
@@ -41,11 +42,6 @@ const config = {
     publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
     currency: (process.env.STRIPE_CURRENCY || 'usd').toLowerCase(),
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
-  },
-  cloudinary: {
-    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
-    apiKey: process.env.CLOUDINARY_API_KEY,
-    apiSecret: process.env.CLOUDINARY_API_SECRET,
   },
   // Forecast microservice (Python/FastAPI). Optional — the backend falls back
   // to a built-in seasonal-naive forecast when this is unreachable.
