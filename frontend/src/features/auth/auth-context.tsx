@@ -1,8 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import type { AuthError } from '@supabase/supabase-js'
-import { api, clearRestaurantSelection, type ApiError } from '@/lib/api'
+import { clearRestaurantSelection, getSelectedRestaurant, type ApiError } from '@/lib/backend'
 import { supabase } from '@/lib/supabase'
-import type { AuthUser, RegisterRestaurantResponse } from './types'
+import type { AuthRestaurant, AuthUser, Role } from './types'
 
 interface AuthState {
   user: AuthUser | null
@@ -10,9 +10,10 @@ interface AuthState {
   // Email awaiting OTP verification (set after registration or an unconfirmed login).
   pendingEmail: string | null
   login: (email: string, password: string) => Promise<AuthUser>
-  registerRestaurant: (payload: RegisterRestaurantPayload) => Promise<RegisterRestaurantResponse>
+  registerRestaurant: (payload: RegisterRestaurantPayload) => Promise<void>
   verifyEmail: (code: string) => Promise<void>
-  resendVerification: (email: string) => Promise<{ verifyToken?: string } | null>
+  resendVerification: (email: string) => Promise<void>
+  requestPasswordReset: (email: string) => Promise<void>
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>
   logout: () => Promise<void>
   refresh: () => Promise<AuthUser | null>
@@ -46,6 +47,50 @@ const readPendingEmail = () => {
   }
 }
 
+interface RestaurantRow {
+  id: string
+  name: string
+  settings: AuthRestaurant['settings']
+}
+const toRestaurant = (r: RestaurantRow | null): AuthRestaurant | undefined =>
+  r ? { _id: r.id, name: r.name, settings: r.settings ?? {} } : undefined
+
+// The signed-in user's profile, scoped to the restaurant they're working in:
+// owners of several restaurants (and superadmins) can switch, and RLS only
+// returns a selected restaurant they're actually allowed to manage.
+async function loadProfile(): Promise<AuthUser | null> {
+  const { data: sessionData } = await supabase.auth.getSession()
+  const session = sessionData.session
+  if (!session) return null
+
+  const { data: profile, error } = await supabase
+    .from('profiles')
+    .select(
+      'id, name, email, role, phone, is_active, restaurant:restaurants!profiles_restaurant_id_fkey(id, name, settings)'
+    )
+    .eq('id', session.user.id)
+    .maybeSingle()
+  if (error || !profile || !profile.is_active) return null
+
+  let restaurant = toRestaurant(profile.restaurant as unknown as RestaurantRow | null)
+  const selected = getSelectedRestaurant()
+  if (selected && selected !== restaurant?._id && ['manager', 'superadmin'].includes(profile.role)) {
+    const { data } = await supabase.from('restaurants').select('id, name, settings').eq('id', selected).maybeSingle()
+    if (data) restaurant = toRestaurant(data as RestaurantRow)
+  }
+
+  return {
+    _id: profile.id,
+    name: profile.name,
+    email: profile.email,
+    role: profile.role as Role,
+    phone: profile.phone ?? undefined,
+    isActive: profile.is_active,
+    isVerified: Boolean(session.user.email_confirmed_at),
+    restaurant,
+  }
+}
+
 const AuthContext = createContext<AuthState | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -63,22 +108,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setPendingEmailState(email)
   }, [])
 
-  // Loads the app profile for the current Supabase session (if any).
   const refresh = useCallback(async () => {
     try {
-      const { data } = await supabase.auth.getSession()
-      if (!data.session) {
-        setUser(null)
-        return null
+      const profile = await loadProfile()
+      if (!profile) {
+        // A session without an active profile (deactivated / deleted) is useless.
+        const { data } = await supabase.auth.getSession()
+        if (data.session) await supabase.auth.signOut()
       }
-      const { user } = await api.get<{ user: AuthUser }>('/api/auth/me')
-      setUser(user)
-      return user
-    } catch {
-      // Session exists but the profile is missing/deactivated — sign out cleanly.
-      await supabase.auth.signOut()
-      setUser(null)
-      return null
+      setUser(profile)
+      return profile
     } finally {
       setLoading(false)
     }
@@ -111,11 +150,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [refresh, setPendingEmail]
   )
 
+  // A database trigger creates the restaurant and makes this user its manager.
   const registerRestaurant = useCallback(
-    async (payload: RegisterRestaurantPayload) => {
-      const data = await api.post<RegisterRestaurantResponse>('/api/auth/register-restaurant', payload)
-      setPendingEmail(payload.email.trim().toLowerCase())
-      return data
+    async ({ restaurantName, name, email, password, currency, language }: RegisterRestaurantPayload) => {
+      const normalized = email.trim().toLowerCase()
+      const { data, error } = await supabase.auth.signUp({
+        email: normalized,
+        password,
+        options: {
+          emailRedirectTo: `${window.location.origin}/`,
+          data: { name, restaurant_name: restaurantName, currency, language },
+        },
+      })
+      if (error) throw toApiError(error)
+      // With email enumeration protection on, an existing address returns a
+      // user with no identities instead of an error.
+      if (data.user && data.user.identities?.length === 0) {
+        throw { status: 400, message: 'User already exists' } satisfies ApiError
+      }
+      setPendingEmail(normalized)
     },
     [setPendingEmail]
   )
@@ -133,7 +186,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 
   const resendVerification = useCallback(async (email: string) => {
-    return api.post<{ verifyToken?: string } | null>('/api/auth/resend-verification', { email })
+    const { error } = await supabase.auth.resend({ type: 'signup', email })
+    if (error) throw toApiError(error)
+  }, [])
+
+  const requestPasswordReset = useCallback(async (email: string) => {
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
+      redirectTo: `${window.location.origin}/reset-password`,
+    })
+    // Same response whether or not the account exists (no user enumeration).
+    if (error && error.status !== 400) throw toApiError(error)
   }, [])
 
   const changePassword = useCallback(
@@ -164,6 +226,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         registerRestaurant,
         verifyEmail,
         resendVerification,
+        requestPasswordReset,
         changePassword,
         logout,
         refresh,
@@ -179,4 +242,10 @@ export function useAuth() {
   const ctx = useContext(AuthContext)
   if (!ctx) throw new Error('useAuth must be used inside AuthProvider')
   return ctx
+}
+
+// The restaurant the signed-in staff member is working in.
+// eslint-disable-next-line react-refresh/only-export-components
+export function useRestaurantId() {
+  return useAuth().user?.restaurant?._id
 }

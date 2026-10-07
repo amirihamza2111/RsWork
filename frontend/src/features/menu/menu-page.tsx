@@ -138,19 +138,8 @@ function MenuItemDialog({
       category,
       prepStation,
     }
-    // Multipart only when an image is attached; otherwise plain JSON.
-    let payload: FormData | Record<string, unknown> = fields
-    if (imageFile) {
-      const fd = new FormData()
-      fd.append('name', JSON.stringify(fields.name))
-      fd.append('price', String(fields.price))
-      fd.append('category', fields.category)
-      fd.append('prepStation', fields.prepStation)
-      fd.append('image', imageFile)
-      payload = fd
-    }
-    if (editing) await update.mutateAsync({ id: editing._id, body: payload })
-    else await create.mutateAsync(payload)
+    if (editing) await update.mutateAsync({ id: editing._id, values: fields, imageFile, previousImage: editing.image })
+    else await create.mutateAsync({ values: fields, imageFile })
     onClose()
   }
 

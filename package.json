@@ -1,0 +1,17 @@
+{
+  "name": "rswork-tools",
+  "private": true,
+  "description": "Seed data and integration tests for the RsWork Supabase project",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "seed": "node --env-file=.env scripts/seed.mjs",
+    "test": "node --env-file=.env --test tests/",
+    "test:functions": "cd supabase/functions && npx --yes deno test --allow-net"
+  },
+  "devDependencies": {
+    "@supabase/supabase-js": "^2.117.2"
+  }
+}

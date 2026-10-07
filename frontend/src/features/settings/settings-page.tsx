@@ -9,7 +9,7 @@ import { Select } from '@/components/ui/select'
 import { PasswordInput } from '@/components/ui/password-input'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/features/auth/auth-context'
-import type { ApiError } from '@/lib/api'
+import type { ApiError } from '@/lib/backend'
 import { useMyRestaurant, useUpdateRestaurant } from './hooks'
 
 function RestaurantProfileCard() {

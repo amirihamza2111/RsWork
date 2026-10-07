@@ -8,7 +8,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { PasswordInput } from '@/components/ui/password-input'
 import { EMAIL_NOT_CONFIRMED, useAuth } from './auth-context'
 import { getRoleHome } from './types'
-import type { ApiError } from '@/lib/api'
+import type { ApiError } from '@/lib/backend'
 
 export function LoginPage() {
   const { login, resendVerification } = useAuth()

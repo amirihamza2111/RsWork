@@ -1,7 +1,9 @@
 import { useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '@/lib/api'
+import { rpc } from '@/lib/backend'
+import { useRestaurantId } from '@/features/auth/auth-context'
 import { restaurantTopic, subscribe } from '@/lib/realtime'
+import { useLivePolling } from '@/lib/use-live-polling'
 
 // The waiter board reports presence so tables are auto-assigned among the
 // waiters actually on the floor (the API treats ~2 min of silence as offline).
@@ -42,19 +44,22 @@ const WAITER_EVENTS = [
 ]
 
 export function useWaiterOrders() {
+  const restaurantId = useRestaurantId()
+  const refetchInterval = useLivePolling(restaurantId ? restaurantTopic(restaurantId) : undefined, [
+    ['orders', 'waiter'],
+  ])
   return useQuery({
     queryKey: ['orders', 'waiter'],
-    queryFn: () => api.get<{ orders: WaiterOrder[] }>('/api/orders/kds'),
-    select: (d) => d.orders,
-    refetchInterval: 15_000,
+    enabled: Boolean(restaurantId),
+    queryFn: () => rpc<WaiterOrder[]>('kds_orders', { p_restaurant: restaurantId }),
+    refetchInterval,
   })
 }
 
 export function useMarkServed() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (orderId: string) =>
-      api.put(`/api/orders/${orderId}/status`, { status: 'served' }),
+    mutationFn: (orderId: string) => rpc('set_order_status', { p_order: orderId, p_status: 'served' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['orders', 'waiter'] }),
   })
 }
@@ -64,18 +69,22 @@ export function useMarkServed() {
 export function useClaimOrder() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (orderId: string) => api.put(`/api/orders/${orderId}/claim`),
+    mutationFn: (orderId: string) => rpc('claim_order', { p_order: orderId }),
     onSettled: () => qc.invalidateQueries({ queryKey: ['orders', 'waiter'] }),
   })
 }
 
 // The waiter's section: tables auto-assigned to them (updates on sections_updated).
 export function useMyTables() {
+  const restaurantId = useRestaurantId()
+  const refetchInterval = useLivePolling(restaurantId ? restaurantTopic(restaurantId) : undefined, [
+    ['waiter', 'tables'],
+  ])
   return useQuery({
     queryKey: ['waiter', 'tables'],
-    queryFn: () => api.get<{ tables: { _id: string; number: number }[] }>('/api/tables'),
-    select: (d) => [...d.tables].sort((a, b) => a.number - b.number),
-    refetchInterval: 30_000,
+    enabled: Boolean(restaurantId),
+    queryFn: () => rpc<{ _id: string; number: number }[]>('waiter_tables', { p_restaurant: restaurantId }),
+    refetchInterval,
   })
 }
 
@@ -88,13 +97,13 @@ export function useWaiterRealtime(restaurantId?: string) {
       qc.invalidateQueries({ queryKey: ['waiter', 'tables'] })
     })
 
-    const beat = () => void api.post('/api/tables/presence').catch(() => {})
+    const beat = () => void rpc('waiter_heartbeat').catch(() => {})
     beat()
     const timer = window.setInterval(beat, PRESENCE_INTERVAL_MS)
     return () => {
       unsubscribe()
       window.clearInterval(timer)
-      void api.delete('/api/tables/presence').catch(() => {})
+      void rpc('waiter_leave').catch(() => {})
     }
   }, [restaurantId, qc])
 }

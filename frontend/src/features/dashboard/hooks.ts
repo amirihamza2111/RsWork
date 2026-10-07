@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-import { api } from '@/lib/api'
+import { rpc } from '@/lib/backend'
+import { useRestaurantId } from '@/features/auth/auth-context'
 
 export interface DashboardStats {
   totalOrdersToday: number
@@ -21,24 +22,28 @@ export interface TopItem {
 }
 
 export function useDashboardStats() {
+  const restaurantId = useRestaurantId()
   return useQuery({
-    queryKey: ['reports', 'dashboard'],
-    queryFn: () => api.get<DashboardStats>('/api/reports/dashboard'),
+    queryKey: ['reports', restaurantId, 'dashboard'],
+    enabled: Boolean(restaurantId),
+    queryFn: () => rpc<DashboardStats>('report_dashboard', { p_restaurant: restaurantId }),
   })
 }
 
 export function useWeeklyReport() {
+  const restaurantId = useRestaurantId()
   return useQuery({
-    queryKey: ['reports', 'weekly'],
-    queryFn: () => api.get<{ report: WeeklyPoint[] }>('/api/reports/weekly'),
-    select: (data) => data.report,
+    queryKey: ['reports', restaurantId, 'weekly'],
+    enabled: Boolean(restaurantId),
+    queryFn: () => rpc<WeeklyPoint[]>('report_weekly', { p_restaurant: restaurantId }),
   })
 }
 
 export function useTopItems() {
+  const restaurantId = useRestaurantId()
   return useQuery({
-    queryKey: ['reports', 'top-items'],
-    queryFn: () => api.get<{ topItems: TopItem[] }>('/api/reports/top-items'),
-    select: (data) => data.topItems,
+    queryKey: ['reports', restaurantId, 'top-items'],
+    enabled: Boolean(restaurantId),
+    queryFn: () => rpc<TopItem[]>('report_top_items', { p_restaurant: restaurantId, p_limit: 5 }),
   })
 }

@@ -3,11 +3,12 @@ import { CookingPot, Wine, Check, Loader2, ChefHat, Clock } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
+import { restaurantTopic } from '@/lib/realtime'
+import { useChannelConnected } from '@/lib/use-live-polling'
 import { useAuth } from '@/features/auth/auth-context'
 import {
   useKdsOrders,
   useKdsRealtime,
-  useRealtimeConnected,
   useUpdateItemStatus,
   itemName,
   nextItemAction,
@@ -120,7 +121,7 @@ export function KdsBoard() {
     typeof user?.restaurant === 'string' ? user.restaurant : user?.restaurant?._id
   const { data: orders, isLoading, isError, error } = useKdsOrders()
   useKdsRealtime(restaurantId)
-  const connected = useRealtimeConnected(restaurantId)
+  const connected = useChannelConnected(restaurantId ? restaurantTopic(restaurantId) : undefined)
   useTick()
 
   return (

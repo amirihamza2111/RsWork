@@ -4,9 +4,9 @@ A small, stateless FastAPI microservice that forecasts daily **orders** and
 **revenue** using Holt-Winters triple exponential smoothing (additive trend +
 weekly seasonality), with automatic fallbacks for short histories.
 
-The Node backend (`/api/reports/forecast`) calls this service. If it is
-unreachable, the backend falls back to a built-in seasonal-naive forecast, so
-the API never breaks.
+The `ai-report` Supabase Edge Function calls this service (`ML_SERVICE_URL`).
+If it is unreachable, the function falls back to a built-in seasonal-naive
+forecast, so the report never breaks.
 
 ## Run locally
 
@@ -19,8 +19,8 @@ pip install -r requirements.txt
 uvicorn app:app --port 8000 --reload
 ```
 
-Point the backend at it with `ML_SERVICE_URL=http://localhost:8000` (this is the
-default).
+To use it from the `ai-report` function, set the `ML_SERVICE_URL` secret to a
+URL the function can reach (a deployed Render URL, or a tunnel to `localhost:8000`).
 
 ## API
 

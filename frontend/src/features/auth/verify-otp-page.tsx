@@ -4,7 +4,7 @@ import { AlertCircle, CheckCircle2, Loader2, Mail } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { useAuth } from './auth-context'
-import type { ApiError } from '@/lib/api'
+import type { ApiError } from '@/lib/backend'
 
 const CODE_LEN = 6
 
@@ -113,12 +113,8 @@ export function VerifyOtpPage() {
     setInfo(null)
     setResending(true)
     try {
-      const result = await resendVerification(email)
-      setInfo(
-        result?.verifyToken
-          ? `Sent. Dev code: ${result.verifyToken}`
-          : 'A new code has been sent to your inbox.'
-      )
+      await resendVerification(email)
+      setInfo('A new code has been sent to your inbox.')
     } catch (err) {
       setError((err as ApiError).message)
     } finally {

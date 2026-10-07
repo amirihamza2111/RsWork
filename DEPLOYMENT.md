@@ -6,77 +6,66 @@ Production stack:
   Diners' phones / staff devices
             │  HTTPS
             ▼
-   Netlify ──────────►  frontend (Vite SPA, PWA) ──Auth + Realtime──►  Supabase
-            │  XHR (CORS-allowlisted)                                  ▲
-            ▼                                                          │
-   Render  ──────────►  rswork-api   (Node/Express) ──SQL / Auth admin / Storage / Broadcast
-            └─────────►  rswork-ml    (FastAPI forecast service, internal)
+   Netlify ──────────►  frontend (Vite SPA)
+            │  supabase-js (Auth, PostgREST, Realtime, Storage, Functions)
+            ▼
+   Supabase ─────────►  Postgres + RLS + RPCs · Auth · Realtime · Storage · Edge Functions
+            │                                   │
+            └──── Stripe webhook ───────────────┘     ai-report ──► Groq / Gemini
+                                                       ai-report ──► Render: rswork-ml (FastAPI)
 ```
 
-Everything is env-driven; **no secret is committed** (`.gitignore` blocks `.env*`).
-Templates: `backend/.env.production.example`, `frontend/.env.production.example`.
+There is no API server to host: everything that used to live in Express is in
+Postgres functions or Edge Functions. **No secret is committed** (`.gitignore`
+blocks `.env*`); templates: `.env.example`, `frontend/.env.production.example`.
 
 ---
 
-## 0. Accounts you need (all have free tiers)
-Supabase · Render · Netlify · Stripe · Resend · Groq · Sentry (optional).
-
----
+## 0. Accounts (all have free tiers)
+Supabase · Netlify · Render (ML service only) · Stripe · Resend (SMTP) · Groq · Sentry (optional).
 
 ## 1. Supabase
-1. Create a project (pick the region closest to Render, e.g. `eu-west-1` / Frankfurt).
-2. Apply `supabase/migrations/*.sql` in order (SQL editor, or `supabase link` + `supabase db push`).
-   This creates the schema, RLS policies, Realtime channel authorization and the `menu-images` bucket.
-3. **Authentication → Sign In / Providers → Email**: keep **Confirm email** on.
-4. **Authentication → URL Configuration**: set the Site URL to the Netlify domain.
-5. Collect the values for the API:
-   - `SUPABASE_URL` — Project Settings → API.
-   - `SUPABASE_SERVICE_ROLE_KEY` — Project Settings → API keys (secret key). Server only.
-   - `SUPABASE_DB_URL` — **Connect → Transaction pooler** connection string (port 6543).
-   - For the frontend: the **publishable** key (`sb_publishable_…`).
-6. Seed once from your machine with those env vars set: `cd backend && npm run seed && npm run seed:menu`.
+1. Create a project (e.g. `eu-west-1`).
+2. Apply `supabase/migrations/*.sql` in order — SQL editor, or `supabase link --project-ref <ref>` then `supabase db push`.
+3. Deploy the functions: `supabase functions deploy staff-admin stripe-intent stripe-webhook ai-report --no-verify-jwt`
+   (they verify callers themselves; the platform JWT check doesn't understand the new API keys).
+4. **Edge Functions → Secrets**: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CURRENCY` (default `usd`), `AI_PROVIDER` (`groq`/`gemini`), `GROQ_API_KEY` or `GEMINI_API_KEY`, `ML_SERVICE_URL` (from step 2).
+5. **Authentication**
+   - *Sign In / Providers → Email*: keep **Confirm email** on.
+   - *SMTP*: custom SMTP with Resend (host `smtp.resend.com`, port 465, user `resend`, password = Resend API key, sender on your verified domain). Without it Supabase only emails your own team.
+   - *Emails → Confirm signup*: include the code, e.g. `Your RsWork code: {{ .Token }}`.
+   - *URL Configuration*: Site URL = the Netlify domain; redirect URLs: `https://<domain>/reset-password`.
+6. Seed once from your machine: fill the repo-root `.env` (`SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`) and run `npm install && npm run seed`.
 
 > Free-tier note: Supabase pauses a free project after ~1 week without activity; resume it
-> from the dashboard. Any regular traffic (or a weekly ping) keeps it active.
+> from the dashboard. Any regular traffic keeps it active.
 
-## 2. Render (backend API + forecast service)
-1. Push this repo to GitHub (`main`).
-2. Render → **New → Blueprint** → pick the repo. It reads `render.yaml` and creates **rswork-api** + **rswork-ml**.
-3. On **rswork-api**, open **Environment** and paste the `sync:false` secrets from `backend/.env.production.example` (`SUPABASE_*`, Stripe, Resend, Groq, VAPID, Sentry). Leave `CLIENT_URL`/`CORS_ORIGINS` for step 4.
-4. Deploy. Health check: `https://rswork-api.onrender.com/health` → `{"success":true}`.
+## 2. Render (forecast service)
+1. Render → **New → Blueprint** → pick the repo; `render.yaml` creates **rswork-ml**.
+2. Health check: `https://rswork-ml.onrender.com/health`. Put its URL in the `ML_SERVICE_URL` function secret.
+   The free instance sleeps when idle; the AI report falls back to a built-in forecast if it doesn't answer within 4 s.
 
 ## 3. Netlify (frontend)
-1. Netlify → **Add new site → Import an existing project** → GitHub → pick the repo.
-2. Build settings come from the repo-root **`netlify.toml`** (base `frontend`, command `npm run build`, publish `frontend/dist`, SPA redirects) — don't override them in the UI.
-3. **Environment variables** (Site configuration → Environment variables — set them BEFORE the first deploy; Vite inlines them at build time):
-   - `VITE_API_URL` = your Render API URL (`https://rswork-api.onrender.com`)
-   - `VITE_SUPABASE_URL` / `VITE_SUPABASE_PUBLISHABLE_KEY` = the project URL + publishable key
-   - `VITE_VAPID_PUBLIC_KEY` = same value as backend `VAPID_PUBLIC_KEY`
-   - `VITE_SENTRY_DSN` = frontend Sentry DSN (optional)
-4. Deploy → note the domain, e.g. `https://rswork.netlify.app` (rename under Site configuration → Change site name, or attach a custom domain). Every push to `main` auto-deploys.
+1. **Add new site → Import an existing project** → pick the repo. `netlify.toml` sets base `frontend`, build `npm run build`, publish `dist`, SPA redirects.
+2. **Environment variables** (before the first build — Vite inlines them):
+   - `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`
+   - `VITE_STRIPE_PUBLISHABLE_KEY` (optional — enables online card payment)
+   - `VITE_SENTRY_DSN` (optional)
+3. Deploy, then set the Supabase Site URL (step 1.5) to the Netlify domain. Table QR codes are generated in the browser from the current domain, so they're correct automatically.
 
-## 4. Wire the two together (then redeploy each)
-- **Render → rswork-api env:** set `CLIENT_URL` and `CORS_ORIGINS` to the Netlify domain, then redeploy.
-- **Netlify:** confirm `VITE_API_URL` points at Render; if you changed an env var, **Deploys → Trigger deploy → Clear cache and deploy site** (env changes need a rebuild).
-- **Regenerate QR codes:** log in as manager → **Tables → Regenerate QR** so every table QR points at the live `CLIENT_URL`.
+## 4. Stripe (card payments)
+1. **Developers → Webhooks → Add endpoint**: `https://<project-ref>.supabase.co/functions/v1/stripe-webhook`, events `payment_intent.succeeded` and `payment_intent.payment_failed`.
+2. Copy the signing secret into the `STRIPE_WEBHOOK_SECRET` function secret; set `STRIPE_SECRET_KEY` there and `VITE_STRIPE_PUBLISHABLE_KEY` on Netlify.
 
-## 5. Stripe (live card payments)
-1. Stripe dashboard → **Developers → Webhooks → Add endpoint**: `https://rswork-api.onrender.com/api/payments/webhook`, event `payment_intent.succeeded` (+ `payment_intent.payment_failed`).
-2. Copy the signing secret → set `STRIPE_WEBHOOK_SECRET` on Render.
-3. Set `STRIPE_SECRET_KEY` (`sk_live_…`) + `STRIPE_PUBLISHABLE_KEY` (`pk_live_…`). Card UI activates automatically once the publishable key is present.
-
-## 6. Post-deploy smoke test
-- [ ] `/health` on both Render services returns OK.
-- [ ] Manager login works; dashboard loads; AI report downloads.
+## 5. Post-deploy smoke test
+- [ ] `npm test` (repo root) passes against the project.
+- [ ] Manager login works; dashboard loads; AI report PDF downloads.
 - [ ] Scan a table QR on a phone → menu loads (FR/EN/AR), place an order.
-- [ ] Order appears on the KDS in real time (Realtime channel subscribed — "Live").
-- [ ] Cashier settles cash + prints receipt; diner card payment succeeds (Stripe test card first).
+- [ ] Order appears on the KDS in real time ("Live" badge).
+- [ ] Cashier settles cash + downloads the receipt; a Stripe test card payment succeeds.
 - [ ] Set the restaurant **geofence** (Settings → Use my current location) if you want location-gated ordering.
 
----
-
-## Known free-tier caveats (not blockers)
-- **Render free** spins down after ~15 min idle → first request cold-starts (~50s). Upgrade to a paid instance to keep it warm.
-- **Rate limiter and menu micro-cache are in-memory** (single instance). If you scale to multiple instances, move them to **Upstash Redis** (`express-rate-limit` + `rate-limit-redis`, and swap `utils/microCache.js`). Waiter presence already lives in Postgres.
-- **Resend** only sends to arbitrary addresses once you verify a domain; until then it delivers to the account owner only. Verification codes and reset links are sent through Resend, not Supabase's built-in mailer.
-- **Supabase free** pauses after a week of inactivity (see §1); Storage image transforms are a paid feature, so the API resizes uploads itself.
+## Known caveats
+- Realtime delivers broadcasts while clients are connected; screens also poll every 15 s as a safety net.
+- The Supabase security advisor lists the RPC functions as callable `SECURITY DEFINER` functions — intentional: they are the API, and each one authorizes its caller.
+- Storage image transforms are a paid feature, so the browser resizes photos to WebP before upload.

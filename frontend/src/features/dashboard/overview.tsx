@@ -24,22 +24,19 @@ import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { cn, formatCurrency } from '@/lib/utils'
-import { api } from '@/lib/api'
+import { invoke } from '@/lib/backend'
+import type { AiReport } from '@/lib/pdf/aiReport'
 import { useAuth } from '@/features/auth/auth-context'
 import { useDashboardStats, useTopItems, useWeeklyReport, type WeeklyPoint } from './hooks'
 
-// Fetches the AI report PDF with the auth header (window.open sends none → 401)
-// and triggers a browser download.
-async function downloadAiReport() {
-  const blob = await api.getBlob('/api/reports/ai-report/pdf')
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `rswork-report-${new Date().toISOString().slice(0, 10)}.pdf`
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  URL.revokeObjectURL(url)
+// Analytics + narrative come from the `ai-report` Edge Function; the PDF is
+// rendered in the browser.
+async function downloadAiReport(restaurantId: string) {
+  const [report, { downloadAiReportPdf }] = await Promise.all([
+    invoke<AiReport>('ai-report', { restaurantId }),
+    import('@/lib/pdf/aiReport'),
+  ])
+  await downloadAiReportPdf(report)
 }
 
 function StatCard({
@@ -116,8 +113,7 @@ const shortDay = (iso: string) =>
 export function DashboardOverview() {
   const { t } = useTranslation()
   const { user } = useAuth()
-  const currency = (user?.restaurant as { settings?: { currency?: string } } | undefined)?.settings
-    ?.currency ?? 'TND'
+  const currency = user?.restaurant?.settings?.currency ?? 'TND'
 
   const stats = useDashboardStats()
   const weekly = useWeeklyReport()
@@ -140,9 +136,10 @@ export function DashboardOverview() {
 
   const [downloading, setDownloading] = useState(false)
   const onDownload = async () => {
+    if (!user?.restaurant) return
     setDownloading(true)
     try {
-      await downloadAiReport()
+      await downloadAiReport(user.restaurant._id)
     } finally {
       setDownloading(false)
     }

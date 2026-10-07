@@ -1,70 +1,8 @@
-# RsWork — Render Blueprint (backend API + forecast microservice).
+# RsWork — Render Blueprint (forecast microservice only).
 # Deploy: Render Dashboard → New → Blueprint → connect this repo.
-# Secrets (sync:false) are set in the Render dashboard, never committed.
-# The frontend deploys separately on Vercel (see frontend/vercel.json + DEPLOYMENT.md).
+# Everything else runs on Supabase (database, auth, realtime, storage, Edge
+# Functions) and the frontend on Netlify — see DEPLOYMENT.md.
 services:
-  # ---------------------------- Node API ----------------------------
-  - type: web
-    name: rswork-api
-    runtime: node
-    plan: free
-    region: frankfurt
-    branch: main
-    rootDir: backend
-    buildCommand: npm ci
-    startCommand: npm start
-    healthCheckPath: /health
-    autoDeploy: true
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: SUPABASE_STORAGE_BUCKET
-        value: menu-images
-      # Forecast service (internal). Optional — the API falls back if it's down.
-      - key: ML_SERVICE_URL
-        fromService:
-          type: web
-          name: rswork-ml
-          property: hostport
-      # --- Set these in the dashboard (never in git) ---
-      - key: SUPABASE_URL           # https://<project-ref>.supabase.co
-        sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
-      - key: SUPABASE_DB_URL        # transaction pooler connection string (port 6543)
-        sync: false
-      - key: CLIENT_URL             # https://<your-vercel-domain>  (used for QR links)
-        sync: false
-      - key: CORS_ORIGINS           # https://<your-vercel-domain> (comma-separated)
-        sync: false
-      - key: STRIPE_SECRET_KEY
-        sync: false
-      - key: STRIPE_PUBLISHABLE_KEY
-        sync: false
-      - key: STRIPE_WEBHOOK_SECRET
-        sync: false
-      - key: STRIPE_CURRENCY
-        value: usd
-      - key: EMAIL_PROVIDER
-        value: resend
-      - key: RESEND_API_KEY
-        sync: false
-      - key: EMAIL_FROM             # RsWork <no-reply@your-verified-domain>
-        sync: false
-      - key: AI_PROVIDER
-        value: groq
-      - key: GROQ_API_KEY
-        sync: false
-      - key: VAPID_PUBLIC_KEY
-        sync: false
-      - key: VAPID_PRIVATE_KEY
-        sync: false
-      - key: VAPID_CONTACT
-        sync: false
-      - key: SENTRY_DSN
-        sync: false
-
-  # ------------------------ Forecast service ------------------------
   - type: web
     name: rswork-ml
     runtime: python

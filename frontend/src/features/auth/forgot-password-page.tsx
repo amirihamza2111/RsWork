@@ -5,26 +5,23 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent } from '@/components/ui/card'
-import { api, type ApiError } from '@/lib/api'
+import type { ApiError } from '@/lib/backend'
+import { useAuth } from './auth-context'
 
 export function ForgotPasswordPage() {
+  const { requestPasswordReset } = useAuth()
   const [email, setEmail] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [sent, setSent] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // In dev the backend returns the raw token so the flow is testable without email.
-  const [devToken, setDevToken] = useState<string | null>(null)
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     setError(null)
     setSubmitting(true)
     try {
-      const data = await api.post<{ resetToken?: string } | null>('/api/auth/forgot-password', {
-        email: email.trim(),
-      })
+      await requestPasswordReset(email)
       setSent(true)
-      if (data?.resetToken) setDevToken(data.resetToken)
     } catch (err) {
       setError((err as ApiError).message)
     } finally {
@@ -54,17 +51,6 @@ export function ForgotPasswordPage() {
                   If an account exists for <span className="font-medium text-foreground">{email}</span>,
                   a password reset link is on its way.
                 </p>
-                {devToken && (
-                  <div className="rounded-md border border-dashed p-3 text-left text-xs">
-                    <p className="mb-1 font-medium text-muted-foreground">Dev shortcut:</p>
-                    <Link
-                      to={`/reset-password?token=${devToken}`}
-                      className="break-all text-primary hover:underline"
-                    >
-                      /reset-password?token={devToken}
-                    </Link>
-                  </div>
-                )}
               </div>
             ) : (
               <form onSubmit={onSubmit} className="space-y-4">

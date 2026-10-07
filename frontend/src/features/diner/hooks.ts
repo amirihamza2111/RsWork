@@ -1,14 +1,16 @@
 import { useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '@/lib/api'
+import { invoke, rpc } from '@/lib/backend'
 import { subscribe, tableTopic } from '@/lib/realtime'
+import { useLivePolling } from '@/lib/use-live-polling'
+import { fetchCategories, fetchMenuItems } from '@/features/menu/hooks'
 
 type Trilingual = { fr?: string; en?: string; ar?: string } | string
 
 export interface TableInfo {
   _id: string
   number: number
-  restaurant: { _id: string; name?: string; settings?: { currency?: string } }
+  restaurant: { _id: string; name?: string; logo?: string; settings?: { currency?: string } }
 }
 
 export interface DinerCategory {
@@ -53,28 +55,29 @@ export interface TableSession {
 
 // The QR encodes only the table id. Opening a session resolves the table (and
 // its restaurant) AND returns the session id the diner must send to order.
-// The server resumes an existing active session, so a page refresh is safe.
+// An existing active session is resumed, so a page refresh is safe.
 export function useTableSession(tableId?: string) {
   return useQuery({
     queryKey: ['diner', 'session', tableId],
-    queryFn: () => api.post<TableSession>(`/api/tables/${tableId}/session`),
+    queryFn: () => rpc<TableSession>('open_table_session', { p_table: tableId }),
     enabled: Boolean(tableId),
     staleTime: 30 * 60_000,
   })
 }
 
+// The menu is public data, read directly under RLS.
 export function useDinerMenu(restaurantId?: string) {
   const categories = useQuery({
     queryKey: ['diner', 'categories', restaurantId],
-    queryFn: () => api.get<{ categories: DinerCategory[] }>('/api/menu/categories', { restaurantId }),
-    select: (d) => [...d.categories].sort((a, b) => (a.order ?? 99) - (b.order ?? 99)),
+    queryFn: () => fetchCategories(restaurantId!),
+    select: (list): DinerCategory[] => [...list].sort((a, b) => (a.order ?? 99) - (b.order ?? 99)),
     enabled: Boolean(restaurantId),
     staleTime: 5 * 60_000,
   })
   const items = useQuery({
     queryKey: ['diner', 'items', restaurantId],
-    queryFn: () => api.get<{ menuItems: DinerItem[] }>('/api/menu/items', { restaurantId }),
-    select: (d) => d.menuItems.filter((i) => i.isAvailable),
+    queryFn: () => fetchMenuItems(restaurantId!),
+    select: (list): DinerItem[] => list.filter((i) => i.isAvailable),
     enabled: Boolean(restaurantId),
     staleTime: 5 * 60_000,
   })
@@ -89,10 +92,20 @@ export interface PlaceOrderPayload {
   items: { menuItem: string; quantity: number }[]
 }
 
+// Prices, availability, session, geofence and anti-abuse caps are all
+// enforced inside the place_order database function.
 export function usePlaceOrder() {
   return useMutation({
-    mutationFn: (payload: PlaceOrderPayload) =>
-      api.post<{ order: { _id: string } }>('/api/orders', payload),
+    mutationFn: async (payload: PlaceOrderPayload) => {
+      const order = await rpc<{ _id: string }>('place_order', {
+        p_table: payload.table,
+        p_items: payload.items,
+        p_session: payload.sessionId ?? null,
+        p_lat: payload.lat ?? null,
+        p_lng: payload.lng ?? null,
+      })
+      return { order }
+    },
   })
 }
 
@@ -100,7 +113,7 @@ export function usePlaceOrder() {
 export function useRequestBill() {
   return useMutation({
     mutationFn: ({ orderId, method }: { orderId: string; method: 'cash' | 'card' }) =>
-      api.post<{ requested: boolean }>(`/api/orders/${orderId}/request-bill`, { method }),
+      rpc<{ requested: boolean }>('request_bill', { p_order: orderId, p_method: method }),
   })
 }
 
@@ -109,51 +122,52 @@ export function useRequestBill() {
 export interface StripeConfig {
   cardEnabled: boolean
   publishableKey: string | null
-  currency: string
 }
 
-// Whether online card payment is available (publishable key configured).
+const STRIPE_PUBLISHABLE_KEY = (import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY as string | undefined) || null
+
+// Online card payment is available when a Stripe publishable key is configured.
 export function useStripeConfig() {
   return useQuery({
     queryKey: ['payments', 'config'],
-    queryFn: () => api.get<StripeConfig>('/api/payments/config'),
-    staleTime: 10 * 60_000,
+    queryFn: (): StripeConfig => ({ cardEnabled: Boolean(STRIPE_PUBLISHABLE_KEY), publishableKey: STRIPE_PUBLISHABLE_KEY }),
+    staleTime: Infinity,
   })
 }
 
-// Creates the PaymentIntent for an order (amount comes from the server).
+// Creates the PaymentIntent for an order (amount comes from the database).
 export function useInitiateCardPayment() {
   return useMutation({
     mutationFn: (orderId: string) =>
-      api.post<{ clientSecret: string; paymentId: string }>('/api/payments/card/diner', {
-        orderId,
-      }),
+      invoke<{ clientSecret: string; paymentId: string }>('stripe-intent', { action: 'create', orderId }),
   })
 }
 
-// After Stripe confirms client-side, records the payment and marks the order paid.
+// After Stripe confirms client-side, settles the payment (the webhook is the backstop).
 export function useConfirmCardPayment() {
   return useMutation({
-    mutationFn: (paymentIntentId: string) =>
-      api.post('/api/payments/card/diner/confirm', { paymentIntentId }),
+    mutationFn: (paymentIntentId: string) => invoke('stripe-intent', { action: 'confirm', paymentIntentId }),
   })
 }
 
 // Live order tracking: fetch once, then refresh on realtime events for the table.
 export function useTrackedOrder(orderId?: string) {
   const qc = useQueryClient()
+  const queryKey = ['diner', 'order', orderId]
+  // The table channel is only known once the order has loaded; until then this
+  // counts as disconnected and polls fast.
+  const tableId = qc.getQueryData<TrackedOrder>(queryKey)?.table?._id
+  const refetchInterval = useLivePolling(tableId ? tableTopic(tableId) : undefined, [queryKey])
   const query = useQuery({
-    queryKey: ['diner', 'order', orderId],
-    queryFn: () => api.get<{ order: TrackedOrder }>(`/api/orders/${orderId}`),
-    select: (d) => d.order,
+    queryKey,
+    queryFn: () => rpc<TrackedOrder>('get_order', { p_order: orderId }),
     enabled: Boolean(orderId),
-    refetchInterval: 15_000,
+    refetchInterval,
   })
 
-  const tableId = query.data?.table?._id
   useEffect(() => {
     if (!orderId || !tableId) return
-    const events = ['order_updated', 'order_ready', 'order_confirmed', 'orderStatusUpdated', 'kds_updated']
+    const events = ['new_order', 'order_updated', 'order_ready', 'kds_updated', 'paymentCompleted']
     return subscribe(tableTopic(tableId), events, () =>
       qc.invalidateQueries({ queryKey: ['diner', 'order', orderId] })
     )

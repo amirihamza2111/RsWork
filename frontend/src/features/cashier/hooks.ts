@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '@/lib/api'
+import { rpc } from '@/lib/backend'
+import { downloadReceiptPdf, type ReceiptOrder } from '@/lib/pdf/receipt'
 import { restaurantTopic, subscribe } from '@/lib/realtime'
+import { useLivePolling } from '@/lib/use-live-polling'
+import { useRestaurantId } from '@/features/auth/auth-context'
 
 export interface CashierItem {
   _id: string
@@ -28,13 +31,18 @@ export interface ActiveTableResult {
 }
 
 // Cashier looks up a table's unpaid orders by table number. Disabled until a
-// valid number is submitted; polls as a fallback to the socket refresh.
+// valid number is submitted; polls as a fallback to the realtime refresh.
 export function useActiveByTable(tableNumber: number | null) {
+  const restaurantId = useRestaurantId()
+  const refetchInterval = useLivePolling(restaurantId ? restaurantTopic(restaurantId) : undefined, [
+    ['cashier', 'active'],
+  ])
   return useQuery({
     queryKey: ['cashier', 'active', tableNumber],
-    queryFn: () => api.get<ActiveTableResult>('/api/orders/active', { tableNumber }),
-    enabled: tableNumber != null && tableNumber > 0,
-    refetchInterval: 15_000,
+    queryFn: () =>
+      rpc<ActiveTableResult>('active_orders_by_table', { p_restaurant: restaurantId, p_table_number: tableNumber }),
+    enabled: Boolean(restaurantId) && tableNumber != null && tableNumber > 0,
+    refetchInterval,
   })
 }
 
@@ -44,27 +52,18 @@ export function usePayCash() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (orderId: string) => {
-      const { payment } = await api.post<{ payment: { _id: string } }>('/api/payments/cash', {
-        orderId,
-      })
-      await api.post('/api/payments/cash/confirm', { paymentId: payment._id })
+      const { payment } = await rpc<{ payment: { _id: string } }>('start_cash_payment', { p_order: orderId })
+      await rpc('confirm_cash_payment', { p_payment: payment._id })
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['cashier', 'active'] }),
   })
 }
 
-// Downloads the thermal receipt PDF with the auth header attached (window.open
-// would 401 — no Bearer token).
-export async function downloadReceipt(orderId: string, orderNumber: string) {
-  const blob = await api.getBlob(`/api/payments/order/${orderId}/receipt/pdf`)
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `facture-${orderNumber || orderId}.pdf`
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  URL.revokeObjectURL(url)
+// Builds the thermal receipt in the browser from the (paid) order.
+export async function downloadReceipt(orderId: string) {
+  const order = await rpc<ReceiptOrder & { paymentStatus: string }>('get_order', { p_order: orderId })
+  if (order.paymentStatus !== 'paid') throw { status: 400, message: 'Receipt is available only for paid orders' }
+  await downloadReceiptPdf(order)
 }
 
 const CASHIER_EVENTS = [

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { CheckCircle2, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -9,14 +9,27 @@ import { supabase } from '@/lib/supabase'
 
 export function ResetPasswordPage() {
   const [params] = useSearchParams()
-  const token = params.get('token') ?? ''
+  // Custom email templates can link with ?token_hash=…; Supabase's default link
+  // instead lands here with the recovery session already established.
+  const tokenHash = params.get('token_hash') ?? ''
   const navigate = useNavigate()
 
+  const [hasRecoverySession, setHasRecoverySession] = useState(false)
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [done, setDone] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => setHasRecoverySession(Boolean(data.session)))
+    const { data } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') setHasRecoverySession(true)
+    })
+    return () => data.subscription.unsubscribe()
+  }, [])
+
+  const token = tokenHash || (hasRecoverySession ? 'session' : '')
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -25,10 +38,12 @@ export function ResetPasswordPage() {
     if (password !== confirm) return setError('Passwords do not match.')
     setSubmitting(true)
     try {
-      // The emailed link carries a one-time recovery token: exchanging it opens a
-      // short-lived session that is allowed to set the new password.
-      const verified = await supabase.auth.verifyOtp({ token_hash: token, type: 'recovery' })
-      if (verified.error) throw new Error('This reset link is invalid or has expired.')
+      // Exchanging the one-time recovery token opens a short-lived session that
+      // is allowed to set the new password.
+      if (tokenHash) {
+        const verified = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: 'recovery' })
+        if (verified.error) throw new Error('This reset link is invalid or has expired.')
+      }
       const updated = await supabase.auth.updateUser({ password })
       if (updated.error) throw new Error(updated.error.message)
       await supabase.auth.signOut()

@@ -27,7 +27,6 @@ import {
   orderWaiterName,
   type WaiterOrder,
 } from './hooks'
-import { usePushSubscription } from './use-push'
 
 function useTick(ms = 30_000) {
   const [, setN] = useState(0)
@@ -141,7 +140,6 @@ export function WaiterBoard() {
   const { data: myTables } = useMyTables()
   const { requests, dismiss } = useBillRequests(restaurantId)
   useWaiterRealtime(restaurantId)
-  usePushSubscription()
   useTick()
 
   const readyOrders = (orders ?? []).filter((o) => o.status === 'ready')

@@ -9,18 +9,19 @@ export function getRoleHome(role: Role): string {
   return '/'
 }
 
+export interface AuthRestaurant {
+  _id: string
+  name: string
+  settings: { currency?: string; language?: string; timezone?: string }
+}
+
 export interface AuthUser {
   _id: string
   name: string
   email: string
   role: Role
-  restaurant?: string | { _id: string; name?: string }
+  phone?: string
+  restaurant?: AuthRestaurant
   isActive: boolean
   isVerified?: boolean
-}
-
-export interface RegisterRestaurantResponse {
-  user: AuthUser
-  restaurant: { _id: string; name: string }
-  verifyToken?: string
 }

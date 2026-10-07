@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-backend/node_modules/
 
 # Environment / secrets — NEVER commit these
 .env

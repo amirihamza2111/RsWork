@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next'
 import { useMemo, useState, type FormEvent } from 'react'
-import { Plus, Pencil, Trash2, Loader2, QrCode, Download, Printer, RefreshCw, Shuffle, Users } from 'lucide-react'
+import { Plus, Pencil, Trash2, Loader2, QrCode, Download, Printer, Shuffle, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -188,7 +188,7 @@ function QrDialog({ table, onClose }: { table: RestaurantTable | null; onClose: 
 export function TablesPage() {
   const { t } = useTranslation()
   const tables = useTables()
-  const { remove, regenerateAll, autoAssign } = useTableMutations()
+  const { remove, autoAssign } = useTableMutations()
   const [dialog, setDialog] = useState<{ open: boolean; editing: RestaurantTable | null }>({
     open: false,
     editing: null,
@@ -215,18 +215,6 @@ export function TablesPage() {
               <Shuffle className="h-4 w-4" />
             )}
             Auto-assign
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => regenerateAll.mutate()}
-            disabled={regenerateAll.isPending}
-          >
-            {regenerateAll.isPending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
-            )}
-            Regenerate QR
           </Button>
           <Button onClick={() => setDialog({ open: true, editing: null })}>
             <Plus className="h-4 w-4" />

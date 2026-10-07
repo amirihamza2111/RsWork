@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent } from '@/components/ui/card'
 import { PasswordInput } from '@/components/ui/password-input'
 import { useAuth } from './auth-context'
-import type { ApiError } from '@/lib/api'
+import type { ApiError } from '@/lib/backend'
 
 export function RegisterRestaurantPage() {
   const { registerRestaurant } = useAuth()

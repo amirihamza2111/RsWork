@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '@/lib/api'
-import { restaurantTopic, subscribe, watchStatus } from '@/lib/realtime'
+import { rpc } from '@/lib/backend'
+import { restaurantTopic, subscribe } from '@/lib/realtime'
+import { useLivePolling } from '@/lib/use-live-polling'
+import { useRestaurantId } from '@/features/auth/auth-context'
 
 export type ItemStatus = 'queued' | 'preparing' | 'ready' | 'served'
 
@@ -24,12 +26,15 @@ export interface KdsOrder {
 }
 
 export function useKdsOrders() {
+  const restaurantId = useRestaurantId()
+  const refetchInterval = useLivePolling(restaurantId ? restaurantTopic(restaurantId) : undefined, [
+    ['orders', 'kds'],
+  ])
   return useQuery({
     queryKey: ['orders', 'kds'],
-    queryFn: () => api.get<{ orders: KdsOrder[] }>('/api/orders/kds'),
-    select: (d) => d.orders,
-    // Fallback polling in case a realtime event is ever missed.
-    refetchInterval: 15_000,
+    enabled: Boolean(restaurantId),
+    queryFn: () => rpc<KdsOrder[]>('kds_orders', { p_restaurant: restaurantId }),
+    refetchInterval,
   })
 }
 
@@ -37,7 +42,7 @@ export function useUpdateItemStatus() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ orderId, itemId, status }: { orderId: string; itemId: string; status: ItemStatus }) =>
-      api.patch(`/api/orders/${orderId}/items/${itemId}/status`, { status }),
+      rpc('set_item_status', { p_order: orderId, p_item: itemId, p_status: status }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['orders', 'kds'] }),
   })
 }
@@ -61,15 +66,6 @@ export function useKdsRealtime(restaurantId?: string) {
       qc.invalidateQueries({ queryKey: ['orders', 'kds'] })
     )
   }, [restaurantId, qc])
-}
-
-export function useRealtimeConnected(restaurantId?: string) {
-  const [connected, setConnected] = useState(false)
-  useEffect(() => {
-    if (!restaurantId) return
-    return watchStatus(restaurantTopic(restaurantId), setConnected)
-  }, [restaurantId])
-  return connected
 }
 
 // Item display helpers ------------------------------------------------------

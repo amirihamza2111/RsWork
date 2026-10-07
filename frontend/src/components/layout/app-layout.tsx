@@ -7,7 +7,8 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/features/auth/auth-context'
-import { api, getSelectedRestaurant, setSelectedRestaurant } from '@/lib/api'
+import { must, setSelectedRestaurant } from '@/lib/backend'
+import { supabase } from '@/lib/supabase'
 import { setAdminLanguage } from '@/lib/adminI18n'
 
 const LANGS: { code: 'fr' | 'en' | 'ar'; label: string }[] = [
@@ -17,21 +18,22 @@ const LANGS: { code: 'fr' | 'en' | 'ar'; label: string }[] = [
 ]
 
 // Multi-restaurant picker — appears only for owners with several restaurants.
-// Switching stores the selection (sent as X-Restaurant-Id on every request)
-// and reloads so every screen re-scopes to the chosen restaurant.
+// RLS returns exactly the restaurants this user may manage. Switching stores
+// the selection and reloads so every screen re-scopes to the chosen restaurant.
 function RestaurantSwitcher() {
   const { user } = useAuth()
   const { data } = useQuery({
     queryKey: ['restaurants', 'mine'],
-    queryFn: () => api.get<{ restaurants: { _id: string; name: string }[] }>('/api/restaurants/mine'),
-    select: (d) => d.restaurants,
+    queryFn: async () =>
+      must<{ id: string; name: string }[]>(await supabase.from('restaurants').select('id, name').order('name')).map(
+        (r) => ({ _id: r.id, name: r.name })
+      ),
     enabled: user?.role === 'manager' || user?.role === 'superadmin',
     staleTime: 5 * 60_000,
   })
 
   if (!data || data.length < 2) return null
-  const scoped = typeof user?.restaurant === 'string' ? user.restaurant : user?.restaurant?._id
-  const current = getSelectedRestaurant() || scoped || data[0]._id
+  const current = user?.restaurant?._id || data[0]._id
 
   return (
     <div className="flex items-center gap-1.5">
@@ -85,7 +87,7 @@ export function AppLayout() {
   const initial = (user?.name || '?').trim().charAt(0).toUpperCase()
 
   function onLogout() {
-    logout()
+    void logout()
     navigate('/login', { replace: true })
   }
 
