@@ -1,7 +1,7 @@
 """
-Forecast microservice for Layali Carthage.
+Forecast microservice for RsWork.
 
-Stateless: the Node backend posts the daily history (orders + revenue) and gets
+Stateless: the `ai-report` Edge Function posts the daily history (orders + revenue) and gets
 back a forecast with prediction intervals and out-of-sample accuracy metrics.
 """
 from datetime import date, timedelta
@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from forecasting import evaluate_and_forecast
 
-app = FastAPI(title="Layali Carthage — Forecast Service", version="2.0.0")
+app = FastAPI(title="RsWork — Forecast Service", version="2.0.0")
 
 
 class Point(BaseModel):

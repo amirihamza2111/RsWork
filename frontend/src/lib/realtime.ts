@@ -1,9 +1,8 @@
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from './supabase'
 
-// Supabase Realtime Broadcast channels published by the API:
+// Supabase Realtime Broadcast channels, published by the database RPCs:
 //   restaurant:<id>  private — staff of that restaurant (authorized by RLS)
-//   waiter:<id>      private — one waiter
 //   table:<id>       public  — diners at a table (no PII)
 // One channel per topic is shared by every hook that needs it.
 
@@ -87,4 +86,3 @@ export function watchStatus(topic: string, onChange: StatusListener) {
 
 export const restaurantTopic = (restaurantId: string) => `restaurant:${restaurantId}`
 export const tableTopic = (tableId: string) => `table:${tableId}`
-export const waiterTopic = (userId: string) => `waiter:${userId}`
