@@ -22,7 +22,7 @@ blocks `.env*`); templates: `.env.example`, `frontend/.env.production.example`.
 ---
 
 ## 0. Accounts (all have free tiers)
-Supabase · Netlify · Render (ML service only) · Stripe · Resend (SMTP) · Groq · Sentry (optional).
+Supabase · Netlify · Render (ML service only) · Stripe · Resend (SMTP) · Groq.
 
 ## 1. Supabase
 1. Create a project (e.g. `eu-west-1`).
@@ -49,9 +49,7 @@ Supabase · Netlify · Render (ML service only) · Stripe · Resend (SMTP) · Gr
 1. **Add new site → Import an existing project** → pick the repo. `netlify.toml` sets base `frontend`, build `npm run build`, publish `dist`, SPA redirects.
 2. **Environment variables** (before the first build — Vite inlines them):
    - `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`
-   - `VITE_STRIPE_PUBLISHABLE_KEY` (optional — enables online card payment)
-   - `VITE_SENTRY_DSN` (optional)
-3. Deploy, then set the Supabase Site URL (step 1.5) to the Netlify domain. Table QR codes are generated in the browser from the current domain, so they're correct automatically.
+   - `VITE_STRIPE_PUBLISHABLE_KEY` (optional — enables online card payment)3. Deploy, then set the Supabase Site URL (step 1.5) to the Netlify domain. Table QR codes are generated in the browser from the current domain, so they're correct automatically.
 
 ## 4. Stripe (card payments)
 1. **Developers → Webhooks → Add endpoint**: `https://<project-ref>.supabase.co/functions/v1/stripe-webhook`, events `payment_intent.succeeded` and `payment_intent.payment_failed`.

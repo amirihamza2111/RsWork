@@ -83,7 +83,7 @@ Demo logins (password `password123`): `manager@`, `cook@`, `waiter@`, `waiter2@`
 ```bash
 cd frontend
 npm install
-cp .env.example .env.local   # VITE_SUPABASE_URL, VITE_SUPABASE_PUBLISHABLE_KEY (+ optional Stripe/Sentry)
+cp .env.example .env.local   # VITE_SUPABASE_URL, VITE_SUPABASE_PUBLISHABLE_KEY (+ optional Stripe)
 npm run dev                  # http://localhost:5173
 ```
 

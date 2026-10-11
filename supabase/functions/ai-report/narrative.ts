@@ -4,9 +4,11 @@
 // deno-lint-ignore no-explicit-any
 type Analytics = any;
 
+// Providers retire models regularly; set the AI_MODEL secret to switch without
+// a code change. These are only the fallbacks.
 const DEFAULT_MODELS: Record<string, string> = {
-  gemini: 'gemini-2.0-flash',
-  groq: 'llama-3.3-70b-versatile',
+  gemini: 'gemini-3.5-flash-lite',
+  groq: 'openai/gpt-oss-120b',
 };
 
 const provider = (Deno.env.get('AI_PROVIDER') ?? 'groq').toLowerCase();
@@ -74,12 +76,12 @@ async function generateJson(prompt: string): Promise<Record<string, unknown>> {
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: SYSTEM }] },
           contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.4, maxOutputTokens: 2048, responseMimeType: 'application/json' },
+          generationConfig: { temperature: 0.4, maxOutputTokens: 4096, responseMimeType: 'application/json' },
         }),
         signal: AbortSignal.timeout(timeoutMs),
       },
     );
-    if (!resp.ok) throw new Error(`Gemini API ${resp.status}`);
+    if (!resp.ok) throw new Error(`Gemini API ${resp.status}: ${(await resp.text()).slice(0, 300)}`);
     const data = await resp.json();
     text = (data.candidates?.[0]?.content?.parts ?? []).map((p: { text?: string }) => p.text ?? '').join('');
   } else {
@@ -93,12 +95,14 @@ async function generateJson(prompt: string): Promise<Record<string, unknown>> {
           { role: 'user', content: prompt },
         ],
         temperature: 0.4,
-        max_tokens: 2048,
+        // Reasoning models spend part of the budget thinking before they answer.
+        max_tokens: 4096,
+        ...(model.startsWith('openai/gpt-oss') ? { reasoning_effort: 'low' } : {}),
         response_format: { type: 'json_object' },
       }),
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!resp.ok) throw new Error(`Groq API ${resp.status}`);
+    if (!resp.ok) throw new Error(`Groq API ${resp.status}: ${(await resp.text()).slice(0, 300)}`);
     const data = await resp.json();
     text = data.choices?.[0]?.message?.content ?? '';
   }
@@ -159,7 +163,8 @@ export async function generateNarrative(analytics: Analytics) {
       _generatedBy: 'ai',
     };
   } catch (err) {
-    // Never fail the report because the AI is down.
+    // Never fail the report because the AI is down — but say so in the logs.
+    console.error(`[ai-report] ${modelLabel} failed, using the template narrative:`, err);
     return { ...templateNarrative(analytics), _aiError: (err as Error).message };
   }
 }
