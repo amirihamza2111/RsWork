@@ -60,6 +60,7 @@ const DICT = {
   payNow: { fr: 'Payer maintenant', en: 'Pay now', ar: 'ادفع الآن' },
   paymentProcessing: { fr: 'Paiement en cours…', en: 'Processing payment…', ar: 'جارٍ الدفع…' },
   paymentSuccess: { fr: 'Paiement réussi — merci !', en: 'Payment successful — thank you!', ar: 'تم الدفع بنجاح — شكراً !' },
+  paid: { fr: 'Payé', en: 'Paid', ar: 'مدفوع' },
   paymentFailed: { fr: 'Le paiement a échoué. Réessayez ou payez au comptoir.', en: 'Payment failed. Try again or pay with staff.', ar: 'فشل الدفع. حاول مجدداً أو ادفع لدى الموظف.' },
   // Location
   locationNeeded: { fr: 'Activez la localisation pour commander.', en: 'Please enable location to order.', ar: 'يرجى تفعيل الموقع للطلب.' },

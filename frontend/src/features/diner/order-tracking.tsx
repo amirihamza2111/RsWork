@@ -54,6 +54,8 @@ export function OrderTracking() {
   }
 
   const cancelled = order.status === 'cancelled'
+  // Settled by the cashier, or by card on this page.
+  const paid = order.paymentStatus === 'paid' || cardPaid
   const currentIdx = STEPS.findIndex((s) => s.key === order.status)
   const backToMenu = () => navigate(order.table?._id ? `/menu?tableId=${order.table._id}` : '/menu')
 
@@ -141,9 +143,15 @@ export function OrderTracking() {
         <button onClick={backToMenu} className="flex h-12 items-center justify-center gap-2 rounded-2xl border border-[#F3D9CF] bg-white font-medium text-[#3F1D1B] active:scale-[0.99]">
           <UtensilsCrossed className="h-4 w-4" /> {t('orderMore')}
         </button>
-        <button onClick={() => { setPayOpen(true); setBillSent(false) }} className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#D6402C] font-medium text-white active:scale-[0.99]">
-          <Wallet className="h-4 w-4" /> {t('payAtTable')}
-        </button>
+        {paid ? (
+          <div className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#D6402C]/10 font-medium text-[#D6402C]">
+            <Check className="h-4 w-4" /> {t('paid')}
+          </div>
+        ) : (
+          <button onClick={() => { setPayOpen(true); setBillSent(false) }} className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#D6402C] font-medium text-white active:scale-[0.99]">
+            <Wallet className="h-4 w-4" /> {t('payAtTable')}
+          </button>
+        )}
       </div>
 
       {/* Pay sheet */}
@@ -154,10 +162,10 @@ export function OrderTracking() {
               <h2 className="font-serif text-xl font-semibold">{t('payAtTable')}</h2>
               <button onClick={closePaySheet} className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-[#F7E7E0]"><X className="h-4 w-4" /></button>
             </div>
-            {billSent || cardPaid ? (
+            {billSent || paid ? (
               <div className="flex flex-col items-center gap-2 py-6 text-center">
                 <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#D6402C]/10"><Check className="h-6 w-6 text-[#D6402C]" /></div>
-                <p className="text-sm text-[#8A6A62]">{cardPaid ? t('paymentSuccess') : t('billRequested')}</p>
+                <p className="text-sm text-[#8A6A62]">{paid ? t('paymentSuccess') : t('billRequested')}</p>
               </div>
             ) : clientSecret && stripePromise ? (
               <Elements stripe={stripePromise} options={{ clientSecret }}>

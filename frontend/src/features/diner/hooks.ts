@@ -40,6 +40,7 @@ export interface TrackedOrder {
   _id: string
   orderNumber: string
   status: string
+  paymentStatus: 'unpaid' | 'paid' | 'partial'
   totalAmount: number
   createdAt: string
   table?: { _id?: string; number?: number }
