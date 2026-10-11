@@ -20,7 +20,7 @@ RsWork/
 
 ```
              ┌──────────── Supabase ─────────────────────────────────────────┐
- Browser ───►│ Auth        sign-up (email OTP), sign-in, password recovery   │
+ Browser ───►│ Auth        email/password sign-up and sign-in               │
   (React)    │ PostgREST   table reads/writes under RLS + RPC functions       │
              │ Realtime    broadcast channels  restaurant:<id> / table:<id>   │
              │ Storage     menu-images/<restaurant_id>/…                      │
@@ -50,7 +50,7 @@ Highlights:
 |------|------|
 | Frontend | React 19, Vite, TanStack Query, Tailwind, Recharts |
 | Database | Supabase Postgres 17 — RLS, plpgsql RPCs, triggers |
-| Auth | Supabase Auth (email/password, email OTP, recovery links) |
+| Auth | Supabase Auth (email/password; no email delivery — managers reset staff passwords) |
 | Realtime | Supabase Realtime Broadcast |
 | Media | Supabase Storage (images resized to WebP in the browser) |
 | Server code | Supabase Edge Functions (Deno) |
@@ -65,8 +65,8 @@ Highlights:
 ### 1. Supabase
 1. Create a project and apply `supabase/migrations/*.sql` in order (SQL editor, or `supabase link` + `supabase db push`).
 2. Deploy the Edge Functions in `supabase/functions/` (`supabase functions deploy --no-verify-jwt <name>` — each function authorizes callers itself).
-3. **Authentication → Emails**: in the *Confirm signup* template show the 6-digit code with `{{ .Token }}`. For real users configure custom SMTP (e.g. Resend); the built-in mailer only delivers to your team's addresses.
-4. **Authentication → URL Configuration**: Site URL = your frontend URL (`http://localhost:5173` locally); add `/reset-password` to the redirect URLs.
+3. **Authentication → Sign In / Providers → Email**: turn **Confirm email** off. The app sends no email: owners are signed in right after registering, and managers set or reset staff passwords from the Staff page.
+4. **Authentication → URL Configuration**: Site URL = your frontend URL (`http://localhost:5173` locally).
 5. Optional **Edge Function secrets**: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CURRENCY`, `AI_PROVIDER` + `GROQ_API_KEY`/`GEMINI_API_KEY`, `ML_SERVICE_URL`.
 
 ### 2. Seed data and tests (repo root)

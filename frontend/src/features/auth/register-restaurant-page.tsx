@@ -43,8 +43,7 @@ export function RegisterRestaurantPage() {
     setSubmitting(true)
     try {
       await registerRestaurant(form)
-      // Freshly-created accounts start unverified — go collect the OTP.
-      navigate('/verify-otp', { replace: true })
+      navigate('/', { replace: true })
     } catch (err) {
       setError((err as ApiError).message)
     } finally {

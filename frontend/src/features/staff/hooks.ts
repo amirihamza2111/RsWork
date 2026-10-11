@@ -67,7 +67,17 @@ export function useStaffMutations() {
     onSuccess: invalidate,
   })
   const update = useMutation({
-    mutationFn: ({ id, ...body }: { id: string; name?: string; phone?: string; role?: StaffRole; isActive?: boolean }) =>
+    mutationFn: ({
+      id,
+      ...body
+    }: {
+      id: string
+      name?: string
+      phone?: string
+      role?: StaffRole
+      isActive?: boolean
+      password?: string
+    }) =>
       invoke('staff-admin', { action: 'update', userId: id, ...body }),
     onSuccess: invalidate,
   })

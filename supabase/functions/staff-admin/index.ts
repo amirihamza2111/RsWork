@@ -2,7 +2,7 @@
 // browser). Callers must be a manager of the target restaurant or superadmin.
 //
 // POST { action: 'create', name, email, password, phone?, role?, restaurantId? }
-// POST { action: 'update', userId, name?, phone?, role?, isActive? }
+// POST { action: 'update', userId, name?, phone?, role?, isActive?, password? }
 // POST { action: 'deactivate', userId }
 import { HttpError, json, readJson, serve } from '../_shared/http.ts';
 import { admin, requireCaller } from '../_shared/supabase.ts';
@@ -38,18 +38,22 @@ const loadProfile = async (id: string): Promise<Profile | null> => {
   return (data as Profile) ?? null;
 };
 
-// Manager of the restaurant (assigned or owner) or superadmin.
-const canManage = async (me: Profile, restaurantId: string | null) => {
-  if (me.role === 'superadmin') return true;
-  if (me.role !== 'manager' || !restaurantId) return false;
-  if (me.restaurant_id === restaurantId) return true;
+const ownsRestaurant = async (userId: string, restaurantId: string | null) => {
+  if (!restaurantId) return false;
   const { data } = await admin
     .from('restaurants')
     .select('id')
     .eq('id', restaurantId)
-    .eq('owner_id', me.id)
+    .eq('owner_id', userId)
     .maybeSingle();
   return Boolean(data);
+};
+
+// Manager of the restaurant (assigned or owner) or superadmin.
+const canManage = async (me: Profile, restaurantId: string | null) => {
+  if (me.role === 'superadmin') return true;
+  if (me.role !== 'manager' || !restaurantId) return false;
+  return me.restaurant_id === restaurantId || (await ownsRestaurant(me.id, restaurantId));
 };
 
 const allowedRoles = (me: Profile) => (me.role === 'superadmin' ? SUPERADMIN_ROLES : MANAGER_ALLOWED_ROLES);
@@ -97,6 +101,10 @@ serve(async (req) => {
     const target = await loadProfile(String(body.userId ?? ''));
     if (!target) throw new HttpError(404, 'User not found');
     if (!(await canManage(me, target.restaurant_id))) throw new HttpError(403, 'Forbidden');
+    // Another manager must not be able to take over the owner's account.
+    if (me.role !== 'superadmin' && target.id !== me.id && (await ownsRestaurant(target.id, target.restaurant_id))) {
+      throw new HttpError(403, "Only the owner can change the owner's account");
+    }
 
     const patch: Partial<Profile> = {};
     if (action === 'deactivate') {
@@ -119,11 +127,18 @@ serve(async (req) => {
     if (patch.role && patch.role !== target.role) {
       authPatch.app_metadata = { staff_role: patch.role, restaurant_id: target.restaurant_id };
     }
+    // There is no email delivery, so a forgotten password is reset by a manager.
+    if (action === 'update' && body.password !== undefined && body.password !== '') {
+      const password = String(body.password);
+      if (password.length < 6) throw new HttpError(400, 'Password must be at least 6 characters');
+      authPatch.password = password;
+    }
     if (Object.keys(authPatch).length) {
       const { error } = await admin.auth.admin.updateUserById(target.id, authPatch);
       if (error) throw new HttpError(400, error.message);
     }
 
+    if (!Object.keys(patch).length) return json({ user: toDto(target) });
     const { data, error } = await admin.from('profiles').update(patch).eq('id', target.id).select('*').single();
     if (error) throw new HttpError(400, error.message);
     return json({ user: toDto(data as Profile) });

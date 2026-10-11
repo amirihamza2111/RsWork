@@ -1,7 +1,7 @@
 # RsWork — Render Blueprint (forecast microservice only).
 # Deploy: Render Dashboard → New → Blueprint → connect this repo.
 # Everything else runs on Supabase (database, auth, realtime, storage, Edge
-# Functions) and the frontend on Netlify — see DEPLOYMENT.md.
+# Functions) and the frontend on Vercel — see DEPLOYMENT.md.
 services:
   - type: web
     name: rswork-ml

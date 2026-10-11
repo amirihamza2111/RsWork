@@ -28,15 +28,6 @@ const LoginPage = lazy(() => import('@/features/auth/login-page').then((m) => ({
 const RegisterRestaurantPage = lazy(() =>
   import('@/features/auth/register-restaurant-page').then((m) => ({ default: m.RegisterRestaurantPage }))
 )
-const VerifyOtpPage = lazy(() =>
-  import('@/features/auth/verify-otp-page').then((m) => ({ default: m.VerifyOtpPage }))
-)
-const ForgotPasswordPage = lazy(() =>
-  import('@/features/auth/forgot-password-page').then((m) => ({ default: m.ForgotPasswordPage }))
-)
-const ResetPasswordPage = lazy(() =>
-  import('@/features/auth/reset-password-page').then((m) => ({ default: m.ResetPasswordPage }))
-)
 
 // KDS and Waiter each have their own layout — operational screens, not part of the manager dashboard.
 const KdsLayout = lazy(() =>
@@ -79,9 +70,6 @@ export default function App() {
         {/* Public */}
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterRestaurantPage />} />
-        <Route path="/verify-otp" element={<VerifyOtpPage />} />
-        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-        <Route path="/reset-password" element={<ResetPasswordPage />} />
 
         {/* Diner (client) app — public, reached by scanning a table QR */}
         <Route

@@ -23,5 +23,4 @@ export interface AuthUser {
   phone?: string
   restaurant?: AuthRestaurant
   isActive: boolean
-  isVerified?: boolean
 }

@@ -158,6 +158,18 @@ test('diner: realtime announces the new order on the public table channel', asyn
   assert.equal(payload.orderId, s.orderId)
   assert.ok(!('client' in payload))
   await listener.removeChannel(channel)
+  listener.realtime.disconnect() // an open socket would keep the test process alive
+})
+
+test('diner: order numbers are per restaurant (two restaurants can both have #0001)', async () => {
+  const r = s.as.rival
+  const rivalId = s.rival.restaurant_id
+  const category = check(await r.from('categories').insert({ restaurant_id: rivalId, name: { fr: 'A', en: 'A', ar: 'A' } }).select('id').single())
+  const item = check(await r.from('menu_items').insert({ restaurant_id: rivalId, category_id: category.id, name: { fr: 'A', en: 'A', ar: 'A' }, price: 3 }).select('id').single())
+  const table = check(await r.from('tables').insert({ restaurant_id: rivalId, number: 1 }).select('id').single())
+  const session = check(await s.anon.rpc('open_table_session', { p_table: table.id })).session.id
+  const placed = check(await s.anon.rpc('place_order', { p_table: table.id, p_session: session, p_items: [{ menuItem: item.id }] }))
+  assert.match(placed.orderNumber, /-0001$/)
 })
 
 test('diner: invalid items are rejected', async () => {
@@ -205,6 +217,28 @@ test('cashier: lookup, cash payment settled exactly once', async () => {
   assert.equal(stored.payment_status, 'paid')
   const payments = check(await admin.from('payments').select('id').eq('order_id', s.orderId))
   assert.equal(payments.length, 1)
+})
+
+test('table: served + paid frees the table and retires its QR session', async () => {
+  check(await s.as.manager.rpc('set_order_status', { p_order: s.orderId, p_status: 'served' }))
+  const table = check(await admin.from('tables').select('status, session_id').eq('id', s.tableId).single())
+  assert.equal(table.status, 'available')
+  assert.equal(table.session_id, null)
+  assert.equal((await rpcError(order(s.anon, [{ menuItem: s.coke, quantity: 1 }]))).code, 'PT403')
+
+  // The next guests scan again and get a fresh session.
+  s.sessionId = check(await s.anon.rpc('open_table_session', { p_table: s.tableId })).session.id
+})
+
+test('feedback: one per order, and managers can only mark it reviewed', async () => {
+  const sent = check(await s.anon.rpc('submit_feedback', { p_rating: 5, p_order: s.orderId, p_comment: 'Great' }))
+  assert.equal((await rpcError(s.anon.rpc('submit_feedback', { p_rating: 1, p_order: s.orderId }))).code, 'PT409')
+
+  const { error } = await s.as.manager.from('feedback').update({ rating: 1 }).eq('id', sent._id)
+  assert.ok(error, 'rating must not be editable')
+  check(await s.as.manager.from('feedback').update({ status: 'reviewed', reviewed_at: new Date().toISOString() }).eq('id', sent._id))
+  const stored = check(await admin.from('feedback').select('rating, status').eq('id', sent._id).single())
+  assert.deepEqual(stored, { rating: 5, status: 'reviewed' })
 })
 
 test('security: staff RPCs refuse other restaurants and anonymous callers', async () => {
@@ -263,6 +297,32 @@ test('edge: staff-admin provisions and deactivates staff', async () => {
 
   const foreign = await s.as.rival.functions.invoke('staff-admin', { body: { action: 'deactivate', userId: s.cook.id } })
   assert.ok(foreign.error, 'a manager cannot touch another restaurant’s staff')
+})
+
+test('edge: managers reset forgotten passwords, but never the owner’s', async () => {
+  const reset = await s.as.manager.functions.invoke('staff-admin', {
+    body: { action: 'update', userId: s.waiter2.id, password: 'new-pass-123' },
+  })
+  assert.ifError(reset.error)
+  await signedIn(email('waiter2'), 'new-pass-123')
+  await assert.rejects(signedIn(email('waiter2'), PASSWORD))
+
+  const tooShort = await s.as.manager.functions.invoke('staff-admin', {
+    body: { action: 'update', userId: s.waiter2.id, password: '123' },
+  })
+  assert.ok(tooShort.error)
+
+  // A second manager of the same restaurant cannot take over the owner's account.
+  const { data } = await s.as.manager.functions.invoke('staff-admin', {
+    body: { action: 'create', name: 'Co-manager', email: email('comanager'), password: PASSWORD, role: 'manager', restaurantId: s.restaurantId },
+  })
+  users.push(data.user._id)
+  const coManager = await signedIn(email('comanager'), PASSWORD)
+  const takeover = await coManager.functions.invoke('staff-admin', {
+    body: { action: 'update', userId: s.manager.id, password: 'hijacked-123' },
+  })
+  assert.equal(takeover.error?.context?.status, 403)
+  await signedIn(email('manager'), PASSWORD)
 })
 
 test('storage: managers upload only into their restaurant folder', async () => {

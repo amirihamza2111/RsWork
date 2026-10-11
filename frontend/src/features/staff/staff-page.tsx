@@ -56,7 +56,7 @@ function StaffDialog({
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
     if (editing) {
-      await update.mutateAsync({ id: editing._id, name, phone, role })
+      await update.mutateAsync({ id: editing._id, name, phone, role, password: password || undefined })
     } else {
       await create.mutateAsync({ name, email, password, phone: phone || undefined, role })
     }
@@ -73,24 +73,23 @@ function StaffDialog({
         </div>
 
         {!editing && (
-          <>
-            <div className="space-y-2">
-              <Label>Email</Label>
-              <Input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <Label>Temporary password</Label>
-              <PasswordInput
-                required
-                minLength={6}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="new-password"
-                placeholder="At least 6 characters"
-              />
-            </div>
-          </>
+          <div className="space-y-2">
+            <Label>Email</Label>
+            <Input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          </div>
         )}
+        {/* There is no email delivery: managers set passwords and reset forgotten ones here. */}
+        <div className="space-y-2">
+          <Label>{editing ? 'New password' : 'Temporary password'}</Label>
+          <PasswordInput
+            required={!editing}
+            minLength={6}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+            placeholder={editing ? 'Leave empty to keep the current one' : 'At least 6 characters'}
+          />
+        </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-2">

@@ -6,12 +6,12 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent } from '@/components/ui/card'
 import { PasswordInput } from '@/components/ui/password-input'
-import { EMAIL_NOT_CONFIRMED, useAuth } from './auth-context'
+import { useAuth } from './auth-context'
 import { getRoleHome } from './types'
 import type { ApiError } from '@/lib/backend'
 
 export function LoginPage() {
-  const { login, resendVerification } = useAuth()
+  const { login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation() as { state?: { from?: { pathname: string } } }
 
@@ -33,12 +33,6 @@ export function LoginPage() {
       const redirectTo = from && from !== '/' ? from : home
       navigate(redirectTo, { replace: true })
     } catch (err) {
-      // Unverified account: send a fresh code and go collect it.
-      if ((err as { code?: string }).code === EMAIL_NOT_CONFIRMED) {
-        await resendVerification(email.trim()).catch(() => null)
-        navigate('/verify-otp', { replace: true })
-        return
-      }
       setError((err as ApiError).message)
     } finally {
       setSubmitting(false)
@@ -75,12 +69,8 @@ export function LoginPage() {
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label htmlFor="password">Password</Label>
-                  <Link
-                    to="/forgot-password"
-                    className="text-xs text-muted-foreground hover:text-foreground"
-                  >
-                    Forgot?
-                  </Link>
+                  {/* No email delivery: a manager resets passwords from the Staff page. */}
+                  <span className="text-xs text-muted-foreground">Forgot it? Ask your manager.</span>
                 </div>
                 <PasswordInput
                   id="password"

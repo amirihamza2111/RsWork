@@ -1,7 +1,8 @@
 /**
  * Seeds the "RsWork Demo" restaurant: one account per role, the Tunisian demo
- * menu (5 categories, 21 items) and six tables. Idempotent — re-running never
- * duplicates anything and never overwrites edits made in the dashboard.
+ * menu (5 categories, 21 items), six tables and 90 days of order history (so
+ * the dashboard, AI report and forecast have data). Idempotent — re-running
+ * never duplicates anything and never overwrites edits made in the dashboard.
  *
  * Usage (repo root, with .env filled in):  npm run seed
  */
@@ -147,7 +148,151 @@ check(
     )
 )
 
+// ------------------------------------------------------------ order history
+// 90 days up to yesterday, generated from a fixed seed so every run looks the
+// same: lunch and dinner peaks, busier weekends, a slow upward trend, ~3%
+// cancellations, payments for every paid order and feedback on some of them.
+const HISTORY_DAYS = 90
+const TZ_OFFSET_HOURS = 1 // Africa/Tunis is UTC+1 all year
+// Orders per weekday, Sunday first.
+const DAILY_ORDERS = [36, 22, 24, 26, 30, 42, 48]
+const COMMENTS = {
+  5: ['Excellent, as always!', 'Le couscous était parfait.', 'Service rapide, merci.', 'Best lablabi in town.'],
+  4: ['Très bon, un peu d’attente.', 'Good food, busy evening.', 'Bon rapport qualité-prix.'],
+  3: ['Correct, sans plus.', 'The grill was a bit dry.'],
+  2: ['Too long to get our order.', 'Plat servi tiède.'],
+  1: ['Commande oubliée, déçu.'],
+}
+
+function mulberry32(seed) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+const rand = mulberry32(2026)
+const between = (min, max) => min + rand() * (max - min)
+const pick = (list) => list[Math.floor(rand() * list.length)]
+const weighted = (entries) => {
+  let r = rand() * entries.reduce((sum, [, w]) => sum + w, 0)
+  for (const [value, w] of entries) if ((r -= w) <= 0) return value
+  return entries.at(-1)[0]
+}
+
+async function insertInBatches(table, rows, size = 500) {
+  for (let i = 0; i < rows.length; i += size) check(await admin.from(table).insert(rows.slice(i, i + size)))
+}
+
+const today = new Date()
+today.setUTCHours(0, 0, 0, 0)
+const { count: pastOrders } = await admin
+  .from('orders')
+  .select('id', { count: 'exact', head: true })
+  .eq('restaurant_id', restaurantId)
+  .lt('created_at', today.toISOString())
+
+let historyOrders = 0
+if (!pastOrders) {
+  const items = check(await admin.from('menu_items').select('id, name, price, prep_station').eq('restaurant_id', restaurantId))
+  const byName = Object.fromEntries(items.map((i) => [i.name.fr, i]))
+  const staff = check(await admin.from('profiles').select('id, name, role').eq('restaurant_id', restaurantId))
+  const waiters = staff.filter((p) => p.role === 'waiter')
+  const cook = staff.find((p) => p.role === 'cook')
+  const tables = check(await admin.from('tables').select('id').eq('restaurant_id', restaurantId))
+
+  // Popularity weights: couscous and grills sell most, drinks go with most orders.
+  const mains = [
+    ['Couscous Agneau', 9], ['Couscous Poulet', 8], ['Couscous Poisson', 5], ['Kamounia', 4], ['Mloukhia', 3],
+    ['Riz Djerbien', 4], ['Kafteji Royal', 6], ['Makarouna Salsa Escalope', 7], ['Grillade Mixte', 7],
+    ['Brochettes de Poulet', 8], ['Escalope Grillée', 6], ['Merguez Grillée', 4], ['Poisson Grillé', 5],
+  ]
+  const starters = [['Fricassé Thon', 5], ['Lablabi', 6], ['Ojja Merguez', 4]]
+  const drinks = [['Jus', 5], ['Thé', 6], ['Café Turc', 4], ['Eau Minérale', 6], ['Soda', 5]]
+
+  const orders = []
+  const orderItems = []
+  const payments = []
+  const feedback = []
+
+  for (let d = HISTORY_DAYS; d >= 1; d -= 1) {
+    const day = new Date(today.getTime() - d * 86_400_000)
+    const trend = 0.85 + (0.25 * (HISTORY_DAYS - d)) / HISTORY_DAYS
+    const count = Math.round(DAILY_ORDERS[day.getUTCDay()] * trend * between(0.85, 1.15))
+    const stamp = day.toISOString().slice(0, 10).replaceAll('-', '')
+
+    const times = Array.from({ length: count }, () => {
+      const localHour = rand() < 0.6 ? between(12, 14.5) : between(19, 22.5)
+      return new Date(day.getTime() + (localHour - TZ_OFFSET_HOURS) * 3_600_000)
+    }).sort((a, b) => a - b)
+
+    times.forEach((createdAt, index) => {
+      const id = crypto.randomUUID()
+      const lines = [{ item: byName[weighted(mains)], quantity: rand() < 0.3 ? 2 : 1 }]
+      if (rand() < 0.6) lines.push({ item: byName[weighted(starters)], quantity: 1 })
+      if (rand() < 0.8) lines.push({ item: byName[weighted(drinks)], quantity: 1 + Math.floor(rand() * 3) })
+      const total = lines.reduce((sum, l) => sum + Number(l.item.price) * l.quantity, 0)
+      const cancelled = rand() < 0.03
+      const method = rand() < 0.7 ? 'cash' : 'card'
+      const waiter = pick(waiters)
+      const servedAt = new Date(createdAt.getTime() + between(25, 45) * 60_000)
+
+      orders.push({
+        id,
+        restaurant_id: restaurantId,
+        order_number: `ORD-${stamp}-${String(index + 1).padStart(4, '0')}`,
+        table_id: pick(tables).id,
+        waiter_id: waiter.id,
+        prepared_by_id: cancelled ? null : cook.id,
+        prepared_by_name: cancelled ? null : cook.name,
+        served_by_id: cancelled ? null : waiter.id,
+        status: cancelled ? 'cancelled' : 'served',
+        payment_status: cancelled ? 'unpaid' : 'paid',
+        payment_method: method,
+        total_amount: total,
+        created_at: createdAt.toISOString(),
+        updated_at: servedAt.toISOString(),
+      })
+      lines.forEach((l, position) =>
+        orderItems.push({
+          order_id: id,
+          menu_item_id: l.item.id,
+          quantity: l.quantity,
+          price: l.item.price,
+          status: cancelled ? 'queued' : 'served',
+          prep_station: l.item.prep_station,
+          position,
+        })
+      )
+      if (cancelled) return
+
+      const paidAt = new Date(servedAt.getTime() + between(20, 50) * 60_000).toISOString()
+      payments.push({ order_id: id, restaurant_id: restaurantId, amount: total, method, status: 'completed', paid_at: paidAt, created_at: paidAt })
+      if (rand() < 0.12) {
+        const rating = weighted([[5, 45], [4, 35], [3, 12], [2, 5], [1, 3]])
+        feedback.push({
+          restaurant_id: restaurantId,
+          order_id: id,
+          rating,
+          comment: rand() < 0.7 ? pick(COMMENTS[rating]) : null,
+          status: d > 7 ? 'reviewed' : 'new',
+          reviewed_at: d > 7 ? paidAt : null,
+          created_at: paidAt,
+        })
+      }
+    })
+  }
+
+  await insertInBatches('orders', orders)
+  await insertInBatches('order_items', orderItems, 1000)
+  await insertInBatches('payments', payments)
+  await insertInBatches('feedback', feedback)
+  historyOrders = orders.length
+}
+
 console.log('=== Seed complete ===')
 console.log(`Restaurant : ${RESTAURANT} (${restaurantId})`)
 console.log(`Menu items : ${itemsCreated} created`)
+console.log(`History    : ${historyOrders ? `${historyOrders} orders over ${HISTORY_DAYS} days` : 'already present'}`)
 console.log(`Logins (password "${PASSWORD}"): manager / cook / waiter / waiter2 / cashier / client @rswork.com`)

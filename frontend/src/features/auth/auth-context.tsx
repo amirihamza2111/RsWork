@@ -7,13 +7,8 @@ import type { AuthRestaurant, AuthUser, Role } from './types'
 interface AuthState {
   user: AuthUser | null
   loading: boolean
-  // Email awaiting OTP verification (set after registration or an unconfirmed login).
-  pendingEmail: string | null
   login: (email: string, password: string) => Promise<AuthUser>
-  registerRestaurant: (payload: RegisterRestaurantPayload) => Promise<void>
-  verifyEmail: (code: string) => Promise<void>
-  resendVerification: (email: string) => Promise<void>
-  requestPasswordReset: (email: string) => Promise<void>
+  registerRestaurant: (payload: RegisterRestaurantPayload) => Promise<AuthUser>
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>
   logout: () => Promise<void>
   refresh: () => Promise<AuthUser | null>
@@ -29,23 +24,16 @@ interface RegisterRestaurantPayload {
   language?: string
 }
 
-const PENDING_EMAIL_KEY = 'rswork_pending_email'
-
-export const EMAIL_NOT_CONFIRMED = 'email_not_confirmed'
+// Accounts are used straight away: there is no email delivery, so the
+// Supabase "Confirm email" setting must be off.
+const CONFIRM_EMAIL_ON =
+  'Sign-in is blocked because "Confirm email" is enabled in Supabase (Authentication → Sign In / Providers → Email). Turn it off.'
 
 const toApiError = (error: AuthError, fallback?: string): ApiError & { code?: string } => ({
   status: error.status ?? 400,
   message: fallback ?? error.message,
   code: error.code,
 })
-
-const readPendingEmail = () => {
-  try {
-    return sessionStorage.getItem(PENDING_EMAIL_KEY)
-  } catch {
-    return null
-  }
-}
 
 interface RestaurantRow {
   id: string
@@ -86,7 +74,6 @@ async function loadProfile(): Promise<AuthUser | null> {
     role: profile.role as Role,
     phone: profile.phone ?? undefined,
     isActive: profile.is_active,
-    isVerified: Boolean(session.user.email_confirmed_at),
     restaurant,
   }
 }
@@ -96,17 +83,6 @@ const AuthContext = createContext<AuthState | null>(null)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [loading, setLoading] = useState(true)
-  const [pendingEmail, setPendingEmailState] = useState<string | null>(readPendingEmail)
-
-  const setPendingEmail = useCallback((email: string | null) => {
-    try {
-      if (email) sessionStorage.setItem(PENDING_EMAIL_KEY, email)
-      else sessionStorage.removeItem(PENDING_EMAIL_KEY)
-    } catch {
-      // Storage unavailable (private mode) — the in-memory value still works.
-    }
-    setPendingEmailState(email)
-  }, [])
 
   const refresh = useCallback(async () => {
     try {
@@ -137,29 +113,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (email: string, password: string) => {
       const { error } = await supabase.auth.signInWithPassword({ email, password })
       if (error) {
-        if (error.code === EMAIL_NOT_CONFIRMED) {
-          setPendingEmail(email)
-          throw toApiError(error, 'Please verify your email first — we sent you a new code.')
-        }
+        if (error.code === 'email_not_confirmed') throw toApiError(error, CONFIRM_EMAIL_ON)
         throw toApiError(error, 'Invalid credentials')
       }
       const profile = await refresh()
       if (!profile) throw { status: 401, message: 'Account is not available' } satisfies ApiError
       return profile
     },
-    [refresh, setPendingEmail]
+    [refresh]
   )
 
-  // A database trigger creates the restaurant and makes this user its manager.
+  // A database trigger creates the restaurant and makes this user its manager;
+  // the new manager is signed in right away.
   const registerRestaurant = useCallback(
     async ({ restaurantName, name, email, password, currency, language }: RegisterRestaurantPayload) => {
-      const normalized = email.trim().toLowerCase()
       const { data, error } = await supabase.auth.signUp({
-        email: normalized,
+        email: email.trim().toLowerCase(),
         password,
         options: {
-          emailRedirectTo: `${window.location.origin}/`,
-          data: { name, restaurant_name: restaurantName, currency, language },
+          data: {
+            name,
+            restaurant_name: restaurantName,
+            currency,
+            language,
+            // Reports count days and peak hours in the restaurant's timezone.
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          },
         },
       })
       if (error) throw toApiError(error)
@@ -168,35 +147,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (data.user && data.user.identities?.length === 0) {
         throw { status: 400, message: 'User already exists' } satisfies ApiError
       }
-      setPendingEmail(normalized)
+      if (!data.session) throw { status: 403, message: CONFIRM_EMAIL_ON } satisfies ApiError
+      const profile = await refresh()
+      if (!profile) throw { status: 500, message: 'The restaurant could not be created' } satisfies ApiError
+      return profile
     },
-    [setPendingEmail]
+    [refresh]
   )
-
-  const verifyEmail = useCallback(
-    async (code: string) => {
-      const email = pendingEmail ?? user?.email
-      if (!email) throw { status: 400, message: 'Sign in again to verify your email.' } satisfies ApiError
-      const { error } = await supabase.auth.verifyOtp({ email, token: code, type: 'email' })
-      if (error) throw toApiError(error, 'Invalid or expired code')
-      setPendingEmail(null)
-      await refresh()
-    },
-    [pendingEmail, user, refresh, setPendingEmail]
-  )
-
-  const resendVerification = useCallback(async (email: string) => {
-    const { error } = await supabase.auth.resend({ type: 'signup', email })
-    if (error) throw toApiError(error)
-  }, [])
-
-  const requestPasswordReset = useCallback(async (email: string) => {
-    const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
-      redirectTo: `${window.location.origin}/reset-password`,
-    })
-    // Same response whether or not the account exists (no user enumeration).
-    if (error && error.status !== 400) throw toApiError(error)
-  }, [])
 
   const changePassword = useCallback(
     async (currentPassword: string, newPassword: string) => {
@@ -221,12 +178,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       value={{
         user,
         loading,
-        pendingEmail,
         login,
         registerRestaurant,
-        verifyEmail,
-        resendVerification,
-        requestPasswordReset,
         changePassword,
         logout,
         refresh,
