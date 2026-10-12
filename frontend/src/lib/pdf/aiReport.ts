@@ -25,9 +25,39 @@ const COLORS = {
   down: '#e03131',
 }
 
-const money = (value: number, currency: string) => `${Number(value || 0).toFixed(2)} ${currency}`
-const int = (value: number) => String(Math.round(Number(value || 0)))
+const amount = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const money = (value: number, currency: string) => `${amount.format(Number(value || 0))} ${currency}`
+const int = (value: number) => Math.round(Number(value || 0)).toLocaleString('en-US')
 const hourLabel = (h: number) => `${String(h).padStart(2, '0')}:00`
+// "2026-10-11" -> "11 Oct 2026" (dates are calendar days, so format them in UTC).
+const day = (iso: string) =>
+  new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+const weekday = (iso: string) =>
+  new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })
+
+// The standard PDF fonts only cover Latin-1 / WinAnsi. Language models like
+// typographic characters (non-breaking hyphens, narrow spaces…) that would be
+// dropped silently, so map them to ones the font can draw.
+const pdfText = (text: unknown) =>
+  String(text ?? '')
+    .replace(/[‐‑‒−]/g, '-')
+    .replace(/[     ]/g, ' ')
+    .replace(/[​-‍⁠﻿]/g, '')
+    .replace(/≈/g, '~')
+    .replace(/→/g, '->')
+
+const MODEL_NAMES: Record<string, string> = {
+  'holt-winters-additive': 'Holt-Winters (trend + weekly seasonality)',
+  'holt-linear': "Holt's linear trend",
+  'seasonal-naive': 'same-weekday average',
+}
+
+// "groq:openai/gpt-oss-120b" -> "gpt-oss-120b via Groq"
+function modelBadge(label: string) {
+  const [provider, model = ''] = label.split(':')
+  const name = model.split('/').pop() || label
+  return `AI analysis · ${name}${provider ? ` via ${provider.charAt(0).toUpperCase()}${provider.slice(1)}` : ''}`
+}
 
 // Growth reads honestly: a jump from nothing is "New", not a meaningless +100%.
 function growthLabel(pct: number, previous: number, current: number) {
@@ -46,8 +76,9 @@ function render(doc: PdfDoc, { analytics, narrative, modelLabel }: AiReport) {
   const ensure = (h: number) => {
     if (doc.y + h > bottom) doc.addPage()
   }
+  // Keep a heading together with at least a few lines of what follows it.
   const heading = (text: string) => {
-    ensure(46)
+    ensure(80)
     doc.moveDown(0.9)
     doc.font('Helvetica-Bold').fontSize(12.5).fillColor(COLORS.ink).text(text, left, doc.y)
     doc.moveTo(left, doc.y + 3).lineTo(right, doc.y + 3).lineWidth(0.75).strokeColor(COLORS.rule).stroke()
@@ -57,7 +88,7 @@ function render(doc: PdfDoc, { analytics, narrative, modelLabel }: AiReport) {
   const paragraph = (text?: string) => {
     if (!text) return
     ensure(30)
-    doc.font('Helvetica').fontSize(10).fillColor(COLORS.body).text(text, left, doc.y, {
+    doc.font('Helvetica').fontSize(10).fillColor(COLORS.body).text(pdfText(text), left, doc.y, {
       width: contentWidth,
       align: 'justify',
       lineGap: 1.5,
@@ -66,7 +97,7 @@ function render(doc: PdfDoc, { analytics, narrative, modelLabel }: AiReport) {
   }
   const note = (text: string) => {
     ensure(20)
-    doc.font('Helvetica-Oblique').fontSize(9.5).fillColor(COLORS.muted).text(text, left, doc.y, { width: contentWidth })
+    doc.font('Helvetica-Oblique').fontSize(9.5).fillColor(COLORS.muted).text(pdfText(text), left, doc.y, { width: contentWidth })
     doc.moveDown(0.35)
   }
   const table = (headers: [string, number, string?][], rows: string[][]) => {
@@ -87,7 +118,7 @@ function render(doc: PdfDoc, { analytics, narrative, modelLabel }: AiReport) {
       if (r % 2 === 1) doc.rect(left, y, contentWidth, 16).fill(COLORS.zebra)
       doc.font('Helvetica').fontSize(10).fillColor(COLORS.body)
       row.forEach((cell, i) =>
-        doc.text(cell, xs[i], y + 3, { width: headers[i][1], align: headers[i][2] ?? 'left', lineBreak: false, ellipsis: true })
+        doc.text(pdfText(cell), xs[i], y + 3, { width: headers[i][1], align: headers[i][2] ?? 'left', lineBreak: false, ellipsis: true })
       )
       y += 16
     })
@@ -107,13 +138,13 @@ function render(doc: PdfDoc, { analytics, narrative, modelLabel }: AiReport) {
     .fontSize(9)
     .fillColor(COLORS.bandMeta)
     .text(
-      `Period: ${analytics.period.start} to ${analytics.period.end}  (${analytics.period.days} days)   ·   Generated ${new Date()
-        .toISOString()
-        .slice(0, 10)}`,
+      `${day(analytics.period.start)} – ${day(analytics.period.end)}  (${analytics.period.days} days)   ·   Generated ${day(
+        new Date().toISOString().slice(0, 10)
+      )}`,
       left,
       70
     )
-  const badge = narrative._generatedBy === 'ai' ? `AI narrative · ${modelLabel}` : 'Template narrative'
+  const badge = narrative._generatedBy === 'ai' ? modelBadge(modelLabel) : 'Automated summary'
   doc.fontSize(8).fillColor(COLORS.bandMeta).text(badge, right - 200, 30, { width: 200, align: 'right' })
   doc.y = bandH + 20
 
@@ -130,7 +161,16 @@ function render(doc: PdfDoc, { analytics, narrative, modelLabel }: AiReport) {
       delta: growthLabel(analytics.comparison.revenueGrowthPct, analytics.comparison.prevRevenue, analytics.totals.revenue),
     },
     { label: 'Avg. Order Value', value: money(analytics.totals.avgOrderValue, currency), delta: null },
-    { label: 'Cancelled', value: int(analytics.totals.cancelled), delta: null },
+    {
+      label: 'Cancelled',
+      value: int(analytics.totals.cancelled),
+      delta: analytics.totals.orders
+        ? {
+            text: `${((analytics.totals.cancelled / analytics.totals.orders) * 100).toFixed(1)}% of orders`,
+            color: COLORS.muted,
+          }
+        : null,
+    },
   ]
   const gap = 10
   const cardW = (contentWidth - gap * (cards.length - 1)) / cards.length
@@ -145,7 +185,12 @@ function render(doc: PdfDoc, { analytics, narrative, modelLabel }: AiReport) {
       lineBreak: false,
       ellipsis: true,
     })
-    doc.font('Helvetica-Bold').fontSize(15).fillColor(COLORS.ink).text(c.value, x + 9, cardsTop + 23, {
+    // Shrink long values (large revenues) so they stay on one line; PDFKit's
+    // line wrapper breaks text that comes close to the edge, hence the slack.
+    let size = 15
+    doc.font('Helvetica-Bold').fontSize(size)
+    while (size > 9 && doc.widthOfString(c.value) > cardW - 26) doc.fontSize((size -= 0.5))
+    doc.fillColor(COLORS.ink).text(c.value, x + 9, cardsTop + 23 + (15 - size) / 2, {
       width: cardW - 18,
       lineBreak: false,
       ellipsis: true,
@@ -168,8 +213,8 @@ function render(doc: PdfDoc, { analytics, narrative, modelLabel }: AiReport) {
   if (analytics.topItems.length) {
     table(
       [
-        ['ITEM', contentWidth * 0.55],
-        ['QTY', contentWidth * 0.16, 'right'],
+        ['TOP ITEMS BY REVENUE', contentWidth * 0.55],
+        ['QTY SOLD', contentWidth * 0.16, 'right'],
         ['REVENUE', contentWidth * 0.22, 'right'],
       ],
       analytics.topItems.map((it: any) => [String(it.name), int(it.quantity), money(it.revenue, currency)])
@@ -196,22 +241,27 @@ function render(doc: PdfDoc, { analytics, narrative, modelLabel }: AiReport) {
   const fc = analytics.forecast
   const hasSignal = fc?.forecast?.some((d: any) => d.orders > 0 || d.revenue > 0)
   if (fc?.forecast?.length && hasSignal) {
+    // Accuracy in plain words for an owner, not MAE/MAPE jargon.
     const ev = fc.evaluation?.orders
-    if (ev?.metrics) {
-      note(
-        `Model: ${fc.model?.orders}. Accuracy (orders): MAE ${ev.metrics.mae}, MAPE ${ev.metrics.mape ?? 'n/a'}%${
-          ev.skillVsNaive != null ? `, ${Math.round(ev.skillVsNaive * 100)}% better than naive` : ''
-        }.`
-      )
+    const modelName = MODEL_NAMES[fc.model?.orders] ?? fc.model?.orders ?? 'statistical model'
+    let accuracy = `Forecast model: ${modelName}.`
+    if (ev?.metrics?.mae != null) {
+      accuracy += ` Back-tested on past weeks, it is typically within ±${Number(ev.metrics.mae).toFixed(1)} orders a day`
+      if (ev.metrics.mape != null) accuracy += ` (${Number(ev.metrics.mape).toFixed(1)}%)`
+      if (ev.skillVsNaive != null && ev.skillVsNaive > 0) {
+        accuracy += `, ${Math.round(ev.skillVsNaive * 100)}% more accurate than repeating last week`
+      }
+      accuracy += '.'
     }
+    note(`${accuracy} Ranges in brackets are the likely low–high number of orders.`)
     table(
       [
-        ['DATE', contentWidth * 0.4],
-        ['FORECAST ORDERS', contentWidth * 0.28, 'right'],
-        ['FORECAST REVENUE', contentWidth * 0.28, 'right'],
+        ['DAY', contentWidth * 0.4],
+        ['EXPECTED ORDERS', contentWidth * 0.28, 'right'],
+        ['EXPECTED REVENUE', contentWidth * 0.28, 'right'],
       ],
       fc.forecast.map((d: any) => [
-        d.date,
+        weekday(d.date),
         d.ordersUpper != null && d.ordersUpper !== d.orders
           ? `${int(d.orders)}  (${int(d.ordersLower)}–${int(d.ordersUpper)})`
           : int(d.orders),
@@ -229,7 +279,7 @@ function render(doc: PdfDoc, { analytics, narrative, modelLabel }: AiReport) {
       ensure(24)
       const y = doc.y
       doc.font('Helvetica-Bold').fontSize(10).fillColor(COLORS.band).text('•', left, y, { width: 12 })
-      doc.font('Helvetica').fontSize(10).fillColor(COLORS.body).text(rec, left + 14, y, {
+      doc.font('Helvetica').fontSize(10).fillColor(COLORS.body).text(pdfText(rec), left + 14, y, {
         width: contentWidth - 14,
         lineGap: 1,
       })
@@ -237,17 +287,27 @@ function render(doc: PdfDoc, { analytics, narrative, modelLabel }: AiReport) {
     }
   }
 
-  /* Footers: "Page X of Y" once everything is laid out. */
+  /* Footers: "Page X of Y" once everything is laid out, so the page count is
+     whatever the content needed. The footer sits inside the bottom margin;
+     PDFKit treats text below the margin as overflow and would start a new
+     (blank) page for it, so the margin is lifted while the footer is drawn. */
   const range = doc.bufferedPageRange()
   for (let i = range.start; i < range.start + range.count; i += 1) {
     doc.switchToPage(i)
-    const fy = doc.page.height - doc.page.margins.bottom + 16
+    const margin = doc.page.margins.bottom
+    doc.page.margins.bottom = 0
+    const fy = doc.page.height - margin + 18
+    doc.moveTo(left, fy - 6).lineTo(right, fy - 6).lineWidth(0.5).strokeColor(COLORS.rule).stroke()
     doc
       .font('Helvetica')
       .fontSize(8)
       .fillColor(COLORS.faint)
-      .text(`${analytics.restaurant.name}  ·  RsWork`, left, fy, { width: contentWidth * 0.6, lineBreak: false })
-    doc.text(`Page ${i + 1 - range.start} of ${range.count}`, right - 120, fy, { width: 120, align: 'right', lineBreak: false })
+      .text(`${pdfText(analytics.restaurant.name)}  ·  Business Intelligence Report  ·  Generated with RsWork`, left, fy, {
+        width: contentWidth * 0.75,
+        lineBreak: false,
+      })
+    doc.text(`Page ${i + 1 - range.start} of ${range.count}`, right - 100, fy, { width: 100, align: 'right', lineBreak: false })
+    doc.page.margins.bottom = margin
   }
 }
 

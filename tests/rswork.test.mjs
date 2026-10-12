@@ -269,9 +269,14 @@ test('reports: dashboard, weekly and top items come from SQL', async () => {
 })
 
 test('edge: ai-report returns analytics + a narrative (AI or template)', async () => {
-  const { data, error } = await s.as.manager.functions.invoke('ai-report', { body: { restaurantId: s.restaurantId } })
+  // The default period is the last 30 complete days; ask for today, where this run's orders are.
+  const today = new Date().toISOString().slice(0, 10)
+  const { data, error } = await s.as.manager.functions.invoke('ai-report', {
+    body: { restaurantId: s.restaurantId, startDate: today, endDate: today },
+  })
   assert.ifError(error)
   assert.equal(data.analytics.totals.orders, 6)
+  assert.equal(data.analytics.topItems[0].name, 'Pizza', 'top items are ranked by revenue, not quantity')
   assert.equal(data.analytics.forecast.forecast.length, 7)
   assert.equal(typeof data.narrative.executiveSummary, 'string')
 })

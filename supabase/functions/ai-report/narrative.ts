@@ -38,7 +38,7 @@ function buildFacts(a: Analytics) {
       ordersGrowthPct: a.comparison.ordersGrowthPct,
       revenueGrowthPct: a.comparison.revenueGrowthPct,
     },
-    topItems: a.topItems.map((i: Analytics) => `${i.name}: ${i.quantity} sold, ${money(i.revenue, c)}`),
+    topItemsByRevenue: a.topItems.map((i: Analytics) => `${i.name}: ${money(i.revenue, c)} from ${i.quantity} sold`),
     peakHours: a.peakHours.map((h: Analytics) => `${hourLabel(h.hour)} (${h.orders} orders)`),
     busiestDay: a.busiestDay ? `${a.busiestDay.label} (${a.busiestDay.orders} orders)` : 'n/a',
     quietestDay: quietest ? `${quietest.label} (${quietest.orders} orders)` : 'n/a',
@@ -58,12 +58,12 @@ ${JSON.stringify(facts, null, 2)}
 
 Write the report as a JSON object with exactly these string fields:
 - "executiveSummary": 2-3 sentences summarizing overall performance and the trend vs the previous period.
-- "salesAnalysis": one paragraph on orders, revenue, average order value, and the best-selling items.
+- "salesAnalysis": one paragraph on orders, revenue, average order value, and the top items by revenue.
 - "peakAnalysis": one paragraph on the busiest hours and days, and the quietest day.
 - "forecastOutlook": one paragraph interpreting the 7-day forecast (mention it is model-based).
 - "recommendations": an array of 3-5 short, concrete action items grounded in the data.
 
-Return ONLY the JSON object.`;
+Write plain text (no markdown, no emoji). Return ONLY the JSON object.`;
 
 async function generateJson(prompt: string): Promise<Record<string, unknown>> {
   let text: string;
@@ -132,7 +132,9 @@ export function templateNarrative(a: Analytics) {
     )} in revenue (${revTrend} vs the previous period). Average order value was ${money(a.totals.avgOrderValue, c)}.`,
     salesAnalysis: `Revenue totalled ${money(a.totals.revenue, c)} across ${a.totals.orders} orders, with ${
       a.totals.cancelled
-    } cancelled. The best-selling item was ${top}${a.topItems[0] ? ` (${a.topItems[0].quantity} sold)` : ''}.`,
+    } cancelled. The top item by revenue was ${top}${
+      a.topItems[0] ? ` (${money(a.topItems[0].revenue, c)} from ${a.topItems[0].quantity} sold)` : ''
+    }.`,
     peakAnalysis: `The busiest day was ${a.busiestDay?.label ?? 'n/a'} and peak hours were ${
       a.peakHours.map((h: Analytics) => hourLabel(h.hour)).join(', ') || 'n/a'
     }.`,
