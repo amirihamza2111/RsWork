@@ -187,14 +187,23 @@ async function insertInBatches(table, rows, size = 500) {
 
 const today = new Date()
 today.setUTCHours(0, 0, 0, 0)
-const { count: pastOrders } = await admin
-  .from('orders')
-  .select('id', { count: 'exact', head: true })
-  .eq('restaurant_id', restaurantId)
-  .lt('created_at', today.toISOString())
+
+// Days in the window that have no orders yet. Re-running the seed later tops
+// the history up to yesterday, so the demo dashboard and forecast stay current.
+const emptyDays = []
+for (let d = HISTORY_DAYS; d >= 1; d -= 1) {
+  const day = new Date(today.getTime() - d * 86_400_000)
+  const { count } = await admin
+    .from('orders')
+    .select('id', { count: 'exact', head: true })
+    .eq('restaurant_id', restaurantId)
+    .gte('created_at', day.toISOString())
+    .lt('created_at', new Date(day.getTime() + 86_400_000).toISOString())
+  if (!count) emptyDays.push(d)
+}
 
 let historyOrders = 0
-if (!pastOrders) {
+if (emptyDays.length) {
   const items = check(await admin.from('menu_items').select('id, name, price, prep_station').eq('restaurant_id', restaurantId))
   const byName = Object.fromEntries(items.map((i) => [i.name.fr, i]))
   const staff = check(await admin.from('profiles').select('id, name, role').eq('restaurant_id', restaurantId))
@@ -216,7 +225,7 @@ if (!pastOrders) {
   const payments = []
   const feedback = []
 
-  for (let d = HISTORY_DAYS; d >= 1; d -= 1) {
+  for (const d of emptyDays) {
     const day = new Date(today.getTime() - d * 86_400_000)
     const trend = 0.85 + (0.25 * (HISTORY_DAYS - d)) / HISTORY_DAYS
     const count = Math.round(DAILY_ORDERS[day.getUTCDay()] * trend * between(0.85, 1.15))
@@ -294,5 +303,5 @@ if (!pastOrders) {
 console.log('=== Seed complete ===')
 console.log(`Restaurant : ${RESTAURANT} (${restaurantId})`)
 console.log(`Menu items : ${itemsCreated} created`)
-console.log(`History    : ${historyOrders ? `${historyOrders} orders over ${HISTORY_DAYS} days` : 'already present'}`)
+console.log(`History    : ${historyOrders ? `${historyOrders} orders added over ${emptyDays.length} empty day(s)` : 'up to date'}`)
 console.log(`Logins (password "${PASSWORD}"): manager / cook / waiter / waiter2 / cashier / client @rswork.com`)
