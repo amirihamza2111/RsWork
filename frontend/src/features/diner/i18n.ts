@@ -62,6 +62,20 @@ const DICT = {
   paymentSuccess: { fr: 'Paiement réussi — merci !', en: 'Payment successful — thank you!', ar: 'تم الدفع بنجاح — شكراً !' },
   paid: { fr: 'Payé', en: 'Paid', ar: 'مدفوع' },
   paymentFailed: { fr: 'Le paiement a échoué. Réessayez ou payez au comptoir.', en: 'Payment failed. Try again or pay with staff.', ar: 'فشل الدفع. حاول مجدداً أو ادفع لدى الموظف.' },
+  // Feedback
+  feedbackTitle: { fr: 'Votre avis', en: 'Your feedback', ar: 'رأيك' },
+  feedbackPrompt: { fr: 'Comment s’est passé votre repas ?', en: 'How was your meal?', ar: 'كيف كانت وجبتك؟' },
+  feedbackAbout: { fr: 'Votre avis porte sur', en: 'Mostly about', ar: 'يتعلق رأيك بـ' },
+  fbOverall: { fr: 'Global', en: 'Overall', ar: 'عام' },
+  fbFood: { fr: 'Cuisine', en: 'Food', ar: 'الطعام' },
+  fbService: { fr: 'Service', en: 'Service', ar: 'الخدمة' },
+  fbSpeed: { fr: 'Rapidité', en: 'Speed', ar: 'السرعة' },
+  fbAmbiance: { fr: 'Ambiance', en: 'Ambiance', ar: 'الأجواء' },
+  feedbackComment: { fr: 'Un commentaire ? (facultatif)', en: 'Any comment? (optional)', ar: 'تعليق؟ (اختياري)' },
+  feedbackSend: { fr: 'Envoyer mon avis', en: 'Send feedback', ar: 'أرسل رأيي' },
+  feedbackThanks: { fr: 'Merci pour votre avis !', en: 'Thank you for your feedback!', ar: 'شكراً على رأيك!' },
+  feedbackError: { fr: 'Envoi impossible, réessayez.', en: 'Could not send, please try again.', ar: 'تعذّر الإرسال، حاول مجدداً.' },
+  starLabel: { fr: 'étoile(s)', en: 'star(s)', ar: 'نجمة' },
   // Location
   locationNeeded: { fr: 'Activez la localisation pour commander.', en: 'Please enable location to order.', ar: 'يرجى تفعيل الموقع للطلب.' },
 } as const

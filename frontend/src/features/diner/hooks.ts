@@ -118,6 +118,20 @@ export function useRequestBill() {
   })
 }
 
+// One feedback per order (the database refuses a second one with a 409).
+export function useSubmitFeedback() {
+  return useMutation({
+    mutationFn: (body: { orderId: string; tableId?: string; rating: number; category: string; comment?: string }) =>
+      rpc('submit_feedback', {
+        p_rating: body.rating,
+        p_order: body.orderId,
+        p_table: body.tableId ?? null,
+        p_category: body.category,
+        p_comment: body.comment || null,
+      }),
+  })
+}
+
 /* ----------------------- Online card payment (Stripe) ---------------------- */
 
 export interface StripeConfig {

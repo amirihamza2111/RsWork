@@ -12,6 +12,7 @@ import {
   useConfirmCardPayment,
 } from './hooks'
 import { useDiner } from './diner-context'
+import { FeedbackCard } from './feedback-card'
 import { tri, type TKey } from './i18n'
 
 const STEPS: { key: string; label: TKey; hint: TKey }[] = [
@@ -137,6 +138,11 @@ export function OrderTracking() {
           ))}
         </ul>
       </section>
+
+      {/* Feedback, once the food has reached the table */}
+      {!cancelled && (order.status === 'served' || paid) && id && (
+        <FeedbackCard orderId={id} tableId={order.table?._id} />
+      )}
 
       {/* Actions */}
       <div className="mt-5 grid grid-cols-2 gap-3">
