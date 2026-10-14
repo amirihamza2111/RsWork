@@ -14,7 +14,8 @@ RsWork/
 │   ├── migrations/        schema, RLS, RPC functions, Realtime authorization, Storage
 │   └── functions/         Edge Functions: staff-admin, stripe-intent, stripe-webhook, ai-report
 ├── ml-service/            Python + FastAPI forecasting microservice (Holt-Winters)
-├── scripts/seed.mjs       demo data (restaurant, one login per role, menu, tables)
+├── scripts/seed.mjs       demo data (restaurant, logins, menu + photos, tables, 90-day history)
+│   └── assets/menu/       demo menu photos (WebP), uploaded to Supabase Storage by the seed
 └── tests/                 end-to-end checks against the Supabase project
 ```
 
@@ -73,7 +74,7 @@ Highlights:
 ```bash
 cp .env.example .env     # SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, SUPABASE_SECRET_KEY
 npm install
-npm run seed             # "RsWork Demo" restaurant, menu, tables, one login per role
+npm run seed             # demo restaurant, logins, menu photos, tables, 90-day history (re-run to top up)
 npm test                 # end-to-end suite (creates and deletes its own fixtures)
 npm run test:functions   # Edge Function unit tests (Deno)
 ```

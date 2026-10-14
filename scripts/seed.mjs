@@ -1,11 +1,14 @@
 /**
  * Seeds the "RsWork Demo" restaurant: one account per role, the Tunisian demo
  * menu (5 categories, 21 items), six tables and 90 days of order history (so
- * the dashboard, AI report and forecast have data). Idempotent — re-running
- * never duplicates anything and never overwrites edits made in the dashboard.
+ * the dashboard, AI report and forecast have data). Menu photos ship with the
+ * repo (scripts/assets/menu, WebP) and are uploaded to Supabase Storage.
+ * Idempotent — re-running never duplicates anything and never overwrites edits
+ * made in the dashboard.
  *
  * Usage (repo root, with .env filled in):  npm run seed
  */
+import { readFile } from 'node:fs/promises'
 import { admin, check } from './lib/supabase.mjs'
 
 const PASSWORD = 'password123'
@@ -16,51 +19,51 @@ const MENU = [
     category: { fr: 'Entrées', en: 'Starters', ar: 'مقبلات' },
     station: 'kitchen',
     items: [
-      { fr: 'Fricassé Thon', en: 'Tuna Fricassé', ar: 'فريكاسي بالتن', price: 4.5, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004879/Fricass%C3%A9_thon_jduzc4.jpg' },
-      { fr: 'Lablabi', en: 'Lablabi', ar: 'لبلابي', price: 5, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004879/Lablabi_tgzbrd.jpg' },
-      { fr: 'Ojja Merguez', en: 'Merguez Ojja', ar: 'عجة مرقاز', price: 9, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004879/Ojja_Merguez_aanpqq.jpg' },
+      { fr: 'Fricassé Thon', en: 'Tuna Fricassé', ar: 'فريكاسي بالتن', price: 4.5, photo: 'fricasse-thon.webp' },
+      { fr: 'Lablabi', en: 'Lablabi', ar: 'لبلابي', price: 5, photo: 'lablabi.webp' },
+      { fr: 'Ojja Merguez', en: 'Merguez Ojja', ar: 'عجة مرقاز', price: 9, photo: 'ojja-merguez.webp' },
     ],
   },
   {
     category: { fr: 'Couscous', en: 'Couscous', ar: 'كسكسي' },
     station: 'kitchen',
     items: [
-      { fr: 'Couscous Agneau', en: 'Lamb Couscous', ar: 'كسكسي بالضاني', price: 22, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004879/Couscous_agneau_u10a1y.png' },
-      { fr: 'Couscous Poulet', en: 'Chicken Couscous', ar: 'كسكسي بالدجاج', price: 16, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004878/Couscous_au_poulet_icqdlv.jpg' },
-      { fr: 'Couscous Poisson', en: 'Fish Couscous', ar: 'كسكسي بالحوت', price: 20, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004878/Couscous_poisson_e623zr.jpg' },
+      { fr: 'Couscous Agneau', en: 'Lamb Couscous', ar: 'كسكسي بالضاني', price: 22, photo: 'couscous-agneau.webp' },
+      { fr: 'Couscous Poulet', en: 'Chicken Couscous', ar: 'كسكسي بالدجاج', price: 16, photo: 'couscous-poulet.webp' },
+      { fr: 'Couscous Poisson', en: 'Fish Couscous', ar: 'كسكسي بالحوت', price: 20, photo: 'couscous-poisson.webp' },
     ],
   },
   {
     category: { fr: 'Plats Tunisiens', en: 'Tunisian Dishes', ar: 'أطباق تونسية' },
     station: 'kitchen',
     items: [
-      { fr: 'Kamounia', en: 'Kamounia', ar: 'كمونية', price: 12, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004878/Kamounia_jny08g.jpg' },
-      { fr: 'Mloukhia', en: 'Mloukhia', ar: 'ملوخية', price: 13, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004878/Mloukhia_viande_ftg6zf.jpg' },
-      { fr: 'Riz Djerbien', en: 'Djerbian Rice', ar: 'أرز جربي', price: 16, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004878/Riz_Djerbien_edniti.jpg' },
-      { fr: 'Kafteji Royal', en: 'Royal Kafteji', ar: 'كفتاجي رويال', price: 10, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004878/Kafteji_royal_dl8jb9.jpg' },
-      { fr: 'Makarouna Salsa Escalope', en: 'Escalope Pasta', ar: 'مكرونة بالصلصة والاسكالوب', price: 14, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004878/Makarouna_salsa_escalope_vmkm73.jpg' },
+      { fr: 'Kamounia', en: 'Kamounia', ar: 'كمونية', price: 12, photo: 'kamounia.webp' },
+      { fr: 'Mloukhia', en: 'Mloukhia', ar: 'ملوخية', price: 13, photo: 'mloukhia.webp' },
+      { fr: 'Riz Djerbien', en: 'Djerbian Rice', ar: 'أرز جربي', price: 16, photo: 'riz-djerbien.webp' },
+      { fr: 'Kafteji Royal', en: 'Royal Kafteji', ar: 'كفتاجي رويال', price: 10, photo: 'kafteji-royal.webp' },
+      { fr: 'Makarouna Salsa Escalope', en: 'Escalope Pasta', ar: 'مكرونة بالصلصة والاسكالوب', price: 14, photo: 'makarouna-salsa-escalope.webp' },
     ],
   },
   {
     category: { fr: 'Grillades', en: 'Grills', ar: 'مشاوي' },
     station: 'kitchen',
     items: [
-      { fr: 'Grillade Mixte', en: 'Mixed Grill', ar: 'مشوي مشكل', price: 28, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004876/Grillade_mixte_axebq0.jpg' },
-      { fr: 'Brochettes de Poulet', en: 'Chicken Skewers', ar: 'بروشات دجاج', price: 18, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004877/Brochettes_de_poulet_sk4lzr.jpg' },
-      { fr: 'Escalope Grillée', en: 'Grilled Escalope', ar: 'اسكالوب مشوي', price: 16, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004877/Escalope_grill%C3%A9e_wuuv9n.jpg' },
-      { fr: 'Merguez Grillée', en: 'Grilled Merguez', ar: 'مرقاز مشوي', price: 15, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004877/Merguez_grill%C3%A9e_khbbky.jpg' },
-      { fr: 'Poisson Grillé', en: 'Grilled Fish', ar: 'سمك مشوي', price: 24, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004877/Poisson_grill%C3%A9_xdfdbx.jpg' },
+      { fr: 'Grillade Mixte', en: 'Mixed Grill', ar: 'مشوي مشكل', price: 28, photo: 'grillade-mixte.webp' },
+      { fr: 'Brochettes de Poulet', en: 'Chicken Skewers', ar: 'بروشات دجاج', price: 18, photo: 'brochettes-de-poulet.webp' },
+      { fr: 'Escalope Grillée', en: 'Grilled Escalope', ar: 'اسكالوب مشوي', price: 16, photo: 'escalope-grillee.webp' },
+      { fr: 'Merguez Grillée', en: 'Grilled Merguez', ar: 'مرقاز مشوي', price: 15, photo: 'merguez-grillee.webp' },
+      { fr: 'Poisson Grillé', en: 'Grilled Fish', ar: 'سمك مشوي', price: 24, photo: 'poisson-grille.webp' },
     ],
   },
   {
     category: { fr: 'Boissons', en: 'Drinks', ar: 'مشروبات' },
     station: 'bar',
     items: [
-      { fr: 'Jus', en: 'Juice', ar: 'عصير', price: 5, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004877/Jus_jl392u.jpg' },
-      { fr: 'Thé', en: 'Tea', ar: 'شاي', price: 2.5, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004876/the_qydggx.jpg' },
-      { fr: 'Café Turc', en: 'Turkish Coffee', ar: 'قهوة تركي', price: 2.5, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004875/9ahwa_arbi_hruf4f.jpg' },
-      { fr: 'Eau Minérale', en: 'Mineral Water', ar: 'ماء معدني', price: 2, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776004875/Eau_min%C3%A9rale_gmohyg.jpg' },
-      { fr: 'Soda', en: 'Soda', ar: 'صودا', price: 3, image: 'https://res.cloudinary.com/dbiszp8lt/image/upload/f_auto,q_auto/v1776031616/sodaa_tuivfc.jpg' },
+      { fr: 'Jus', en: 'Juice', ar: 'عصير', price: 5, photo: 'jus.webp' },
+      { fr: 'Thé', en: 'Tea', ar: 'شاي', price: 2.5, photo: 'the.webp' },
+      { fr: 'Café Turc', en: 'Turkish Coffee', ar: 'قهوة تركي', price: 2.5, photo: 'cafe-turc.webp' },
+      { fr: 'Eau Minérale', en: 'Mineral Water', ar: 'ماء معدني', price: 2, photo: 'eau-minerale.webp' },
+      { fr: 'Soda', en: 'Soda', ar: 'صودا', price: 3, photo: 'soda.webp' },
     ],
   },
 ]
@@ -106,7 +109,27 @@ for (const [email, role, name] of [
 }
 await ensureUser('client@rswork.com', { userMetadata: { name: 'Demo client' } })
 
+// Demo photos live in the restaurant's Storage folder, like uploads from the
+// dashboard (<restaurant_id>/...). Each file is uploaded once.
+const BUCKET = 'menu-images'
+const photoFolder = `${restaurantId}/demo`
+const storedPhotos = new Set(
+  check(await admin.storage.from(BUCKET).list(photoFolder, { limit: 100 })).map((f) => f.name)
+)
+async function demoPhotoUrl(file) {
+  if (!storedPhotos.has(file)) {
+    const body = await readFile(new URL(`./assets/menu/${file}`, import.meta.url))
+    check(await admin.storage.from(BUCKET).upload(`${photoFolder}/${file}`, body, { contentType: 'image/webp', upsert: true }))
+    storedPhotos.add(file)
+  }
+  return admin.storage.from(BUCKET).getPublicUrl(`${photoFolder}/${file}`).data.publicUrl
+}
+// Seeded items created before the photos moved to Storage still point at the
+// old Cloudinary account; anything else was set by the manager and is kept.
+const isLegacyPhoto = (url) => !url || url.includes('res.cloudinary.com')
+
 let itemsCreated = 0
+let photosMoved = 0
 for (const [index, group] of MENU.entries()) {
   let category = check(
     await admin.from('categories').select('id').eq('restaurant_id', restaurantId).eq('name->>fr', group.category.fr).maybeSingle()
@@ -122,16 +145,22 @@ for (const [index, group] of MENU.entries()) {
   }
   for (const item of group.items) {
     const exists = check(
-      await admin.from('menu_items').select('id').eq('restaurant_id', restaurantId).eq('name->>fr', item.fr).maybeSingle()
+      await admin.from('menu_items').select('id, image').eq('restaurant_id', restaurantId).eq('name->>fr', item.fr).maybeSingle()
     )
-    if (exists) continue
+    if (exists) {
+      if (isLegacyPhoto(exists.image)) {
+        check(await admin.from('menu_items').update({ image: await demoPhotoUrl(item.photo) }).eq('id', exists.id))
+        photosMoved += 1
+      }
+      continue
+    }
     check(
       await admin.from('menu_items').insert({
         restaurant_id: restaurantId,
         category_id: category.id,
         name: { fr: item.fr, en: item.en, ar: item.ar },
         price: item.price,
-        image: item.image,
+        image: await demoPhotoUrl(item.photo),
         prep_station: group.station,
       })
     )
@@ -302,6 +331,6 @@ if (emptyDays.length) {
 
 console.log('=== Seed complete ===')
 console.log(`Restaurant : ${RESTAURANT} (${restaurantId})`)
-console.log(`Menu items : ${itemsCreated} created`)
+console.log(`Menu items : ${itemsCreated} created, ${photosMoved} photo(s) moved to Storage`)
 console.log(`History    : ${historyOrders ? `${historyOrders} orders added over ${emptyDays.length} empty day(s)` : 'up to date'}`)
 console.log(`Logins (password "${PASSWORD}"): manager / cook / waiter / waiter2 / cashier / client @rswork.com`)
