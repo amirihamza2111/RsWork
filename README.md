@@ -1,6 +1,6 @@
 # RsWork
 
-A QR-based **restaurant management platform** by **Nerovex**. A diner scans the QR on their table, orders from a multilingual menu, and tracks their meal in real time; the kitchen works a live KDS board, waiters are notified when food is ready, the cashier settles the bill (cash or card), and the owner gets a BI dashboard with ML-powered forecasting and an AI-written report.
+A QR-based **restaurant management platform** by **Hamza Amiri**. A diner scans the QR on their table, orders from a multilingual menu, and tracks their meal in real time; the kitchen works a live KDS board, waiters are notified when food is ready, the cashier settles the bill (cash or card), and the owner gets a BI dashboard with ML-powered forecasting and an AI-written report.
 
 ## Architecture
 
