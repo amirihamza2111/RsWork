@@ -23,3 +23,7 @@ ml-service/.venv/
 *.log
 .DS_Store
 Thumbs.db
+
+# Load-test fixture (throwaway logins) and results
+perf/.fixture.json
+perf/results/

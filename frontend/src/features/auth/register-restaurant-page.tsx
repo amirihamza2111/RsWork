@@ -35,8 +35,8 @@ export function RegisterRestaurantPage() {
       setError('Passwords do not match')
       return
     }
-    if (form.password.length < 6) {
-      setError('Password must be at least 6 characters')
+    if (form.password.length < 8) {
+      setError('Password must be at least 8 characters')
       return
     }
 
@@ -106,10 +106,10 @@ export function RegisterRestaurantPage() {
                 <PasswordInput
                   id="password"
                   required
-                  minLength={6}
+                  minLength={8}
                   value={form.password}
                   onChange={update('password')}
-                  placeholder="At least 6 characters"
+                  placeholder="At least 8 characters"
                   autoComplete="new-password"
                 />
               </div>
@@ -119,7 +119,7 @@ export function RegisterRestaurantPage() {
                 <PasswordInput
                   id="confirmPassword"
                   required
-                  minLength={6}
+                  minLength={8}
                   value={form.confirmPassword}
                   onChange={update('confirmPassword')}
                   placeholder="Re-enter your password"

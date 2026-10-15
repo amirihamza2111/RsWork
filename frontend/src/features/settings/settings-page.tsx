@@ -234,7 +234,7 @@ function ChangePasswordCard() {
     setError(null)
     setDone(false)
     if (next !== confirm) return setError('Passwords do not match')
-    if (next.length < 6) return setError('New password must be at least 6 characters')
+    if (next.length < 8) return setError('New password must be at least 8 characters')
     setBusy(true)
     try {
       await changePassword(current, next)
@@ -270,7 +270,7 @@ function ChangePasswordCard() {
               <Label>New password</Label>
               <PasswordInput
                 required
-                minLength={6}
+                minLength={8}
                 value={next}
                 onChange={(e) => setNext(e.target.value)}
                 autoComplete="new-password"
@@ -280,7 +280,7 @@ function ChangePasswordCard() {
               <Label>Confirm new password</Label>
               <PasswordInput
                 required
-                minLength={6}
+                minLength={8}
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
                 autoComplete="new-password"

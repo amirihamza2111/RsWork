@@ -140,16 +140,35 @@ function TableDialog({
 /* --------------------------------- QR dialog ---------------------------------- */
 
 // Opens a print-ready page: big QR + table number, auto-triggers the print dialog.
+// Built with DOM APIs (no document.write / inline handlers), so nothing is ever
+// parsed as HTML and it works under the site's Content-Security-Policy.
 function printQr(table: RestaurantTable) {
   if (!table.qrCode) return
   const w = window.open('', '_blank', 'width=480,height=640')
   if (!w) return
-  w.document.write(`<!doctype html><html><head><title>Table ${table.number} — QR</title>
-    <style>body{font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:95vh;margin:0}
-    h1{font-size:28px;margin:0 0 4px}p{color:#555;margin:0 0 16px}img{width:340px;height:340px}</style></head>
-    <body><h1>Table ${table.number}</h1><p>Scan to see the menu &amp; order</p>
-    <img src="${table.qrCode}" onload="window.print()" /></body></html>`)
-  w.document.close()
+  const doc = w.document
+  doc.title = `Table ${table.number} — QR`
+  Object.assign(doc.body.style, {
+    fontFamily: 'sans-serif',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: '95vh',
+    margin: '0',
+  })
+  const title = doc.createElement('h1')
+  title.textContent = `Table ${table.number}`
+  Object.assign(title.style, { fontSize: '28px', margin: '0 0 4px' })
+  const hint = doc.createElement('p')
+  hint.textContent = 'Scan to see the menu & order'
+  Object.assign(hint.style, { color: '#555', margin: '0 0 16px' })
+  const img = doc.createElement('img')
+  Object.assign(img.style, { width: '340px', height: '340px' })
+  img.alt = `QR code for table ${table.number}`
+  img.onload = () => w.print()
+  img.src = table.qrCode
+  doc.body.append(title, hint, img)
 }
 
 function QrDialog({ table, onClose }: { table: RestaurantTable | null; onClose: () => void }) {

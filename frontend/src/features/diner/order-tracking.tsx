@@ -1,7 +1,9 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom'
 import { Check, CircleDot, CreditCard, Heart, Loader2, UtensilsCrossed, Wallet, X, XCircle } from 'lucide-react'
-import { loadStripe } from '@stripe/stripe-js'
+// The `pure` entry only fetches js.stripe.com when loadStripe() runs, i.e. when
+// card payment is configured — not on every tracking page view.
+import { loadStripe } from '@stripe/stripe-js/pure'
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js'
 import { cn } from '@/lib/utils'
 import {

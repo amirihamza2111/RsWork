@@ -83,11 +83,11 @@ function StaffDialog({
           <Label>{editing ? 'New password' : 'Temporary password'}</Label>
           <PasswordInput
             required={!editing}
-            minLength={6}
+            minLength={8}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="new-password"
-            placeholder={editing ? 'Leave empty to keep the current one' : 'At least 6 characters'}
+            placeholder={editing ? 'Leave empty to keep the current one' : 'At least 8 characters'}
           />
         </div>
 

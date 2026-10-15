@@ -77,7 +77,7 @@ serve(async (req) => {
     const restaurantId = (body.restaurantId as string | undefined) || me.restaurant_id;
 
     if (!name || !EMAIL_RE.test(email)) throw new HttpError(400, 'Please provide a name and a valid email');
-    if (password.length < 6) throw new HttpError(400, 'Password must be at least 6 characters');
+    if (password.length < 8) throw new HttpError(400, 'Password must be at least 8 characters');
     if (!allowedRoles(me).has(role)) throw new HttpError(400, 'Invalid role for staff account');
     if (!(await canManage(me, restaurantId))) throw new HttpError(403, 'Restaurant context is required');
 
@@ -130,7 +130,7 @@ serve(async (req) => {
     // There is no email delivery, so a forgotten password is reset by a manager.
     if (action === 'update' && body.password !== undefined && body.password !== '') {
       const password = String(body.password);
-      if (password.length < 6) throw new HttpError(400, 'Password must be at least 6 characters');
+      if (password.length < 8) throw new HttpError(400, 'Password must be at least 8 characters');
       authPatch.password = password;
     }
     if (Object.keys(authPatch).length) {
