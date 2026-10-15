@@ -1,5 +1,7 @@
 # RsWork
 
+[![CI](https://github.com/amirihamza2111/RsWork/actions/workflows/ci.yml/badge.svg)](https://github.com/amirihamza2111/RsWork/actions/workflows/ci.yml)
+
 A QR-based **restaurant management platform** by **Nerovex**. A diner scans the QR on their table, orders from a multilingual menu, and tracks their meal in real time; the kitchen works a live KDS board, waiters are notified when food is ready, the cashier settles the bill (cash or card), and the owner gets a BI dashboard with ML-powered forecasting and an AI-written report.
 
 ## Architecture
@@ -77,6 +79,7 @@ npm install
 npm run seed             # demo restaurant, logins, menu photos, tables, 90-day history (re-run to top up)
 npm test                 # end-to-end suite (creates and deletes its own fixtures)
 npm run test:functions   # Edge Function unit tests (Deno)
+(cd ml-service && pytest -q)   # forecast service API tests
 ```
 Demo logins (password `password123`): `manager@`, `cook@`, `waiter@`, `waiter2@`, `cashier@`, `client@rswork.com`.
 
