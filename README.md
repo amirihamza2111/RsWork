@@ -116,4 +116,4 @@ Errors raise SQLSTATE `PTxxx`, which PostgREST maps to HTTP status `xxx`.
 
 ## License
 
-Proprietary — © Nerovex.
+Proprietary — © Hamza.
