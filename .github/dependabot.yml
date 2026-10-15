@@ -1,11 +1,16 @@
-# Weekly dependency update pull requests; minor and patch bumps are grouped
-# into one PR per ecosystem to keep the noise down. CI runs on each PR.
+# Weekly dependency update pull requests. Major versions are ignored: they
+# usually need migration work (e.g. TypeScript 7, Tailwind 4) and are done as
+# deliberate upgrades. Minor and patch bumps are grouped into one PR per
+# ecosystem to keep the noise down. CI runs on each PR.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /frontend
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: '*'
+        update-types: [version-update:semver-major]
     groups:
       minor-and-patch:
         update-types: [minor, patch]
@@ -14,6 +19,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: '*'
+        update-types: [version-update:semver-major]
     groups:
       minor-and-patch:
         update-types: [minor, patch]
@@ -22,6 +30,9 @@ updates:
     directory: /ml-service
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: '*'
+        update-types: [version-update:semver-major]
     groups:
       minor-and-patch:
         update-types: [minor, patch]
@@ -30,3 +41,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: '*'
+        update-types: [version-update:semver-major]
