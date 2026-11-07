@@ -139,26 +139,33 @@ test('diner: realtime announces the new order on the public table channel', asyn
       resolve(payload)
     })
   })
-  await new Promise((resolve) => channel.subscribe((status) => status === 'SUBSCRIBED' && resolve()))
+  try {
+    await new Promise((resolve) => channel.subscribe((status) => status === 'SUBSCRIBED' && resolve()))
+    // Database broadcasts reach a channel shortly after the join is acknowledged; a real
+    // diner's tracking page is joined long before anything happens.
+    await new Promise((resolve) => setTimeout(resolve, 1500))
 
-  const placed = check(
-    await order(s.anon, [
-      { menuItem: s.pizza, quantity: 2, price: 1 }, // client prices are ignored
-      { menuItem: s.coke, quantity: 1, price: 1, comment: '<b>no ice</b>' },
-    ])
-  )
-  s.orderId = placed._id
-  s.kitchenItem = placed.items.find((i) => i.prepStation === 'kitchen')._id
-  assert.equal(Number(placed.totalAmount), 45)
-  assert.match(placed.orderNumber, /^ORD-\d{8}-\d{4}$/)
-  assert.equal(placed.items.find((i) => i.prepStation === 'bar').comment, 'no ice')
-  assert.ok(!('client' in placed) && !('waiter' in placed), 'anonymous view is PII-free')
+    const placed = check(
+      await order(s.anon, [
+        { menuItem: s.pizza, quantity: 2, price: 1 }, // client prices are ignored
+        { menuItem: s.coke, quantity: 1, price: 1, comment: '<b>no ice</b>' },
+      ])
+    )
+    s.orderId = placed._id
+    s.kitchenItem = placed.items.find((i) => i.prepStation === 'kitchen')._id
+    assert.equal(Number(placed.totalAmount), 45)
+    assert.match(placed.orderNumber, /^ORD-\d{8}-\d{4}$/)
+    assert.equal(placed.items.find((i) => i.prepStation === 'bar').comment, 'no ice')
+    assert.ok(!('client' in placed) && !('waiter' in placed), 'anonymous view is PII-free')
 
-  const payload = await received
-  assert.equal(payload.orderId, s.orderId)
-  assert.ok(!('client' in payload))
-  await listener.removeChannel(channel)
-  listener.realtime.disconnect() // an open socket would keep the test process alive
+    const payload = await received
+    assert.equal(payload.orderId, s.orderId)
+    assert.ok(!('client' in payload))
+  } finally {
+    received.catch(() => {}) // already reported above if it failed
+    await listener.removeChannel(channel)
+    listener.realtime.disconnect() // an open socket would keep the test process alive
+  }
 })
 
 test('diner: order numbers are per restaurant (two restaurants can both have #0001)', async () => {
@@ -202,6 +209,28 @@ test('waiter: concurrent claims have exactly one winner', async () => {
   assert.match(failures[0].error.message, /Already claimed by waiter[12]/)
 })
 
+test('bill request: stays pending for staff screens opened later, until dismissed or paid', async () => {
+  const pending = async (client) => check(await client.rpc('pending_bill_requests', { p_restaurant: s.restaurantId }))
+
+  check(await s.anon.rpc('request_bill', { p_order: s.orderId, p_method: 'card' }))
+  const [req] = (await pending(s.as.waiter1)).filter((r) => r.orderId === s.orderId)
+  assert.equal(req.method, 'card')
+  assert.equal(req.table.number, 7)
+  assert.ok((await pending(s.as.cashier)).some((r) => r.orderId === s.orderId))
+  assert.equal((await rpcError(s.as.rival.rpc('pending_bill_requests', { p_restaurant: s.restaurantId }))).code, 'PT403')
+  assert.equal((await rpcError(s.as.rival.rpc('dismiss_bill_request', { p_order: s.orderId }))).code, 'PT403')
+  assert.ok(await rpcError(s.anon.rpc('pending_bill_requests', { p_restaurant: s.restaurantId })))
+
+  // One waiter handles it: it disappears for everyone.
+  check(await s.as.waiter2.rpc('dismiss_bill_request', { p_order: s.orderId }))
+  assert.ok(!(await pending(s.as.waiter1)).some((r) => r.orderId === s.orderId))
+
+  // Asked again (now cash): pending again until the bill is paid (next test).
+  check(await s.anon.rpc('request_bill', { p_order: s.orderId, p_method: 'cash' }))
+  const again = (await pending(s.as.cashier)).find((r) => r.orderId === s.orderId)
+  assert.equal(again.method, 'cash')
+})
+
 test('cashier: lookup, cash payment settled exactly once', async () => {
   const lookup = check(await s.as.cashier.rpc('active_orders_by_table', { p_restaurant: s.restaurantId, p_table_number: 7 }))
   assert.equal(Number(lookup.totalDue), 45)
@@ -217,6 +246,8 @@ test('cashier: lookup, cash payment settled exactly once', async () => {
   assert.equal(stored.payment_status, 'paid')
   const payments = check(await admin.from('payments').select('id').eq('order_id', s.orderId))
   assert.equal(payments.length, 1)
+  const bills = check(await s.as.cashier.rpc('pending_bill_requests', { p_restaurant: s.restaurantId }))
+  assert.ok(!bills.some((r) => r.orderId === s.orderId), 'a paid bill is no longer pending')
 })
 
 test('table: served + paid frees the table and retires its QR session', async () => {

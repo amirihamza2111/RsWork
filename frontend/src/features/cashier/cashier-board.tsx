@@ -124,7 +124,8 @@ export function CashierBoard() {
                   {r.method}
                 </span>
               </div>
-              <Button size="sm" variant="outline" onClick={() => { goToTable(r.table?.number); dismiss(r.orderId) }}>
+              {/* The request clears by itself once the bill is paid. */}
+              <Button size="sm" variant="outline" onClick={() => goToTable(r.table?.number)}>
                 Settle
               </Button>
               <button onClick={() => dismiss(r.orderId)} className="text-muted-foreground hover:text-foreground" aria-label="Dismiss">

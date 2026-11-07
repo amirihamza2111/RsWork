@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { rpc } from '@/lib/backend'
 import { downloadReceiptPdf, type ReceiptOrder } from '@/lib/pdf/receipt'
@@ -90,21 +90,42 @@ export interface BillRequest {
   orderNumber: string
   table?: { number?: number }
   method: 'cash' | 'card'
-  at: number
+  requestedAt: string
 }
 
-// Live "diner wants to pay" alerts pushed from the diner app.
+// Events that add, clear or settle a bill request.
+const BILL_EVENTS = ['bill_requested', 'bill_request_cleared', 'paymentCompleted', 'orderCancelled']
+
+// "Diner wants to pay" alerts. Loaded from the database, so a request made while the
+// screen was closed still shows; they stay until the bill is paid or someone dismisses it.
 export function useBillRequests(restaurantId?: string) {
-  const [requests, setRequests] = useState<BillRequest[]>([])
+  const qc = useQueryClient()
+  const queryKey = ['bills', 'pending', restaurantId]
+  const refetchInterval = useLivePolling(restaurantId ? restaurantTopic(restaurantId) : undefined, [
+    ['bills', 'pending'],
+  ])
+  const { data } = useQuery({
+    queryKey,
+    queryFn: () => rpc<BillRequest[]>('pending_bill_requests', { p_restaurant: restaurantId }),
+    enabled: Boolean(restaurantId),
+    refetchInterval,
+  })
+
   useEffect(() => {
     if (!restaurantId) return
-    return subscribe(restaurantTopic(restaurantId), ['bill_requested'], (_event, payload) => {
-      const p = payload as Omit<BillRequest, 'at'>
-      setRequests((r) => [{ ...p, at: Date.now() }, ...r.filter((x) => x.orderId !== p.orderId)].slice(0, 5))
-    })
-  }, [restaurantId])
-  const dismiss = (orderId: string) => setRequests((r) => r.filter((x) => x.orderId !== orderId))
-  return { requests, dismiss }
+    return subscribe(restaurantTopic(restaurantId), BILL_EVENTS, () =>
+      qc.invalidateQueries({ queryKey: ['bills', 'pending'] })
+    )
+  }, [restaurantId, qc])
+
+  const dismissMutation = useMutation({
+    mutationFn: (orderId: string) => rpc('dismiss_bill_request', { p_order: orderId }),
+    onMutate: (orderId) =>
+      qc.setQueryData<BillRequest[]>(queryKey, (r) => r?.filter((x) => x.orderId !== orderId)),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['bills', 'pending'] }),
+  })
+
+  return { requests: data ?? [], dismiss: (orderId: string) => dismissMutation.mutate(orderId) }
 }
 
 export function itemDisplayName(item: CashierItem): string {
